@@ -22,6 +22,7 @@ import { setDialogMessage, setShowDialog } from "../../redux/slices/uiSlice";
 import { refreshSessionMetadata } from "../../redux/thunks/session";
 import { getFontSize, getPlatform } from "../../util";
 import { ROUTES } from "../../util/navigation";
+import { BRAND_NAME } from "../../util/brand";
 import ConfirmationDialog from "../dialogs/ConfirmationDialog";
 import { Button } from "../ui";
 import { HistoryTableRow } from "./HistoryTableRow";
@@ -148,6 +149,29 @@ export function History() {
       style={{ fontSize: getFontSize() }}
       className="flex flex-1 flex-col overflow-auto overflow-x-hidden px-1"
     >
+      {/* MicatCode Workspace feature entries (mirrors Kiro Steering/Specs/Hooks/Power) */}
+      <div className="mt-2 flex flex-col gap-1 px-2">
+        <div className="text-2xs text-description font-semibold uppercase tracking-wide">
+          {BRAND_NAME} Workspace
+        </div>
+        {[
+          { label: "Steering", route: ROUTES.STEERING },
+          { label: "Specs", route: ROUTES.SPECS },
+          { label: "Hooks", route: ROUTES.HOOKS },
+          { label: "Power", route: ROUTES.POWER },
+        ].map((item) => (
+          <Button
+            key={item.route}
+            variant="secondary"
+            size="sm"
+            className="w-full justify-start"
+            onClick={() => navigate(item.route)}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+
       <div className="relative my-2 mt-4 flex justify-center space-x-2">
         <input
           className="bg-vsc-input-background text-vsc-foreground flex-1 rounded-md border border-none py-1 pl-2 pr-8 text-sm outline-none focus:outline-none"

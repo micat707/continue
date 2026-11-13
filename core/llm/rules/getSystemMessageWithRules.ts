@@ -6,7 +6,10 @@ import {
   ToolResultChatMessage,
   UserChatMessage,
 } from "../..";
-import { renderChatMessage } from "../../util/messageContent";
+import {
+  contextItemContentToText,
+  renderChatMessage,
+} from "../../util/messageContent";
 import { getCleanUriPath } from "../../util/uri";
 import { extractContentFromCodeBlock } from "../utils/extractContentFromCodeBlocks";
 import { extractPathsFromCodeBlocks } from "../utils/extractPathsFromCodeBlocks";
@@ -357,7 +360,7 @@ export const getSystemMessageWithRules = ({
     if (systemMessage) {
       systemMessage += "\n\n";
     }
-    systemMessage += rule.rule;
+    systemMessage += contextItemContentToText(rule.rule);
   }
 
   const ruleMetadata = appliedRules.map(({ rule, ...rest }) => rest);

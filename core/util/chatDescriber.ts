@@ -30,21 +30,38 @@ export class ChatDescriber {
     }
 
     completionOptions.maxTokens = ChatDescriber.maxTokens;
+    // Title generation is a tiny task, so reasoning must be off. For reasoning
+    // models (e.g. Qwen3.5) `maxTokens: 16` only caps the visible answer, while
+    // the chain-of-thought runs unbounded and the request never finishes.
+    completionOptions.reasoning = false;
 
-    // Prompt the user's current LLM for the title
-    const titleResponse = await model.chat(
-      [
-        {
-          role: "user",
-          content: ChatDescriber.prompt + message,
-        },
-      ],
-      new AbortController().signal,
-      completionOptions,
-    );
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8_000);
 
-    // Set the title
-    return removeQuotesAndEscapes(renderChatMessage(titleResponse));
+    try {
+      // Prompt the user's current LLM for the title
+      const titleResponse = await model.chat(
+        [
+          {
+            role: "user",
+            content: ChatDescriber.prompt + message,
+          },
+        ],
+        controller.signal,
+        completionOptions,
+      );
+
+      // Set the title
+      return removeQuotesAndEscapes(renderChatMessage(titleResponse));
+    } catch (e) {
+      // A title is optional: never let a stuck request bubble up.
+      if (e instanceof Error && e.name === "AbortError") {
+        return undefined;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   // CLI-specific method that works with BaseLlmApi

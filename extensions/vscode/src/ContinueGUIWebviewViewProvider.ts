@@ -25,6 +25,15 @@ export class ContinueGUIWebviewViewProvider
     this.webviewProtocol.webview = webviewView.webview;
     this._webviewView = webviewView;
     this._webview = webviewView.webview;
+    // Pointer follows visibility: while a full-screen panel is open it owns
+    // the shared protocol (getSidebarContent re-assigns it); when the sidebar
+    // is shown again, take the pointer back so commands and inbound messages
+    // reach the sidebar instead of the full-screen panel.
+    webviewView.onDidChangeVisibility((visible) => {
+      if (visible) {
+        this.webviewProtocol.webview = webviewView.webview;
+      }
+    });
     webviewView.webview.html = this.getSidebarContent(
       this.extensionContext,
       webviewView,
@@ -137,8 +146,22 @@ export class ContinueGUIWebviewViewProvider
 
         <title>Continue</title>
       </head>
-      <body>
-        <div id="root"></div>
+      <body style="background-color:#181818">
+        <div id="root">
+          <!-- Boot splash: visible immediately (React replaces #root children
+               on mount), so webview cold-starts never show a blank page. -->
+          <style>
+            @keyframes continue-boot-spin { to { transform: rotate(360deg); } }
+          </style>
+          <div
+            style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#9ca3af;font-family:sans-serif;font-size:13px;background-color:#181818"
+          >
+            <div
+              style="width:28px;height:28px;border:3px solid #374151;border-top-color:#8b5cf6;border-radius:50%;animation:continue-boot-spin 0.8s linear infinite"
+            ></div>
+            <span>Continue 加载中…</span>
+          </div>
+        </div>
 
         ${
           inDevelopmentMode
@@ -175,7 +198,7 @@ export class ContinueGUIWebviewViewProvider
             ? `<script>window.edits = ${JSON.stringify(edits)}</script>`
             : ""
         }
-        ${page ? `<script>window.location.pathname = "${page}"</script>` : ""}
+        <script>window.initialRoute = "${page ?? "/"}"</script>
       </body>
     </html>`;
   }

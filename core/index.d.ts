@@ -1479,7 +1479,8 @@ export type ApplyStateStatus =
   | "not-started" // Apply state created but not necessarily streaming
   | "streaming" // Changes are being applied to the file
   | "done" // All changes have been applied, awaiting user to accept/reject
-  | "closed"; // All changes have been applied. Note that for new files, we immediately set the status to "closed"
+  | "closed" // All changes have been applied. Note that for new files, we immediately set the status to "closed"
+  | "failed"; // Applying the changes to the file failed — terminal state so the GUI never hangs on "streaming"
 
 export interface ApplyState {
   streamId: string;
@@ -1490,6 +1491,12 @@ export interface ApplyState {
   originalFileContent?: string;
   toolCallId?: string;
   autoFormattingDiff?: string;
+  // Session the apply was started in. Pending apply states (accept/reject
+  // review cards) only render in their owning session, so switching to a new
+  // session doesn't surface another session's confirmation card.
+  sessionId?: string;
+  /** Underlying apply failure message (e.g. HTTP 404 / model not found). */
+  error?: string;
 }
 
 export type StreamDiffLinesType = "edit" | "apply";
@@ -1527,6 +1534,10 @@ export interface HighlightedCodePayload {
 export interface AcceptOrRejectDiffPayload {
   filepath?: string;
   streamId?: string;
+  // Owning tool call, so the IDE can echo it back on the "closed" apply-state
+  // update and the GUI can finish the accept/reject bookkeeping (mark the tool
+  // call done + continue the LLM stream).
+  toolCallId?: string;
 }
 
 export interface ShowFilePayload {

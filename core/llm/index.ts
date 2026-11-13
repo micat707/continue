@@ -406,7 +406,16 @@ export abstract class BaseLLM implements ILLM {
     let text = await resp.text();
 
     if (resp.status === 404 && !resp.url.includes("/v1")) {
-      const parsedError = JSON.parse(text);
+      // The body may be empty or non-JSON (common with proxies/gateways that
+      // return bare 404s). JSON.parse on empty text throws "Unexpected end of
+      // JSON input", which used to MASK the real error (the HTTP 404 + URL).
+      // Fall through to the generic message below instead.
+      let parsedError: any;
+      try {
+        parsedError = JSON.parse(text);
+      } catch {
+        parsedError = undefined;
+      }
       const errorMessageRaw = parsedError?.error ?? parsedError?.message;
       const error =
         typeof errorMessageRaw === "string"
@@ -965,6 +974,9 @@ export abstract class BaseLLM implements ILLM {
 
   protected modifyChatBody(
     body: ChatCompletionCreateParams,
+    // Passed by streamChat so providers can map reasoning toggles (e.g.
+    // SiliconFlow's chat_template_kwargs.enable_thinking) onto the body.
+    _options?: CompletionOptions,
   ): ChatCompletionCreateParams {
     return body;
   }
@@ -1144,7 +1156,15 @@ export abstract class BaseLLM implements ILLM {
       messages = compiledChatMessages;
     }
 
-    const messagesCopy = [...messages]; // templateMessages may modify messages.
+    // templateMessages may modify messages, so copy first. Also normalize any
+    // non-string content: a stray MessagePart[]/object here is interpolated by
+    // the chat template as the literal string "[object Object]".
+    const messagesCopy = [...messages].map((message) => {
+      if (typeof message.content === "string") {
+        return message;
+      }
+      return { ...message, content: renderChatMessage(message) };
+    });
 
     const prompt = this.templateMessages
       ? this.templateMessages(messagesCopy)
@@ -1172,7 +1192,13 @@ export abstract class BaseLLM implements ILLM {
     let citations: null | string[] = null;
 
     try {
-      if (this.templateMessages) {
+      // NOTE: autodetectTemplateFunction() silently sets `templateMessages`
+      // for many model families (e.g. anything Qwen-like). When set, this
+      // branch hijacks chat requests into the raw-completions path, where
+      // every chunk is rendered to a plain string — DESTROYING tool calls.
+      // Native tool calling requires the chat API, so bypass the template
+      // whenever the request carries tools.
+      if (this.templateMessages && !completionOptions.tools?.length) {
         for await (const chunk of this._streamComplete(
           prompt,
           signal,
@@ -1186,13 +1212,18 @@ export abstract class BaseLLM implements ILLM {
           yield { role: "assistant", content: chunk };
         }
       } else {
+        if (this.templateMessages && completionOptions.tools?.length) {
+          console.log(
+            `[continue][core] streamChat: templateMessages was autodetected for ${this.model} but bypassed — request carries ${completionOptions.tools.length} tools, using native chat path`,
+          );
+        }
         if (this.shouldUseOpenAIAdapter("streamChat") && this.openaiAdapter) {
           let body = toChatBody(messages, completionOptions, {
             includeReasoningField: this.supportsReasoningField,
             includeReasoningDetailsField: this.supportsReasoningDetailsField,
             includeReasoningContentField: this.supportsReasoningContentField,
           });
-          body = this.modifyChatBody(body);
+          body = this.modifyChatBody(body, completionOptions);
 
           if (logEnabled) {
             interaction?.logItem({

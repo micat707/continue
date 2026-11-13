@@ -159,19 +159,13 @@ export class OpenAIApi implements BaseLlmApi {
         signal,
       },
     );
-    let lastChunkWithUsage: ChatCompletionChunk | undefined;
+    // Yield every chunk immediately, in order. The previous logic held back
+    // any chunk carrying `usage` and re-emitted it at the end — correct for
+    // OpenAI (usage only on the final chunk) but catastrophic for providers
+    // like SiliconFlow that populate `usage` on EVERY chunk: nothing was
+    // yielded until the stream ended, and tool-call chunks were stranded.
     for await (const result of response) {
-      // Check if this chunk contains usage information
-      if (result.usage) {
-        // Store it to emit after all content chunks
-        lastChunkWithUsage = result;
-      } else {
-        yield result;
-      }
-    }
-    // Emit the usage chunk at the end if we have one
-    if (lastChunkWithUsage) {
-      yield lastChunkWithUsage;
+      yield result;
     }
   }
   async completionNonStream(

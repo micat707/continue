@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/continue.iml" filepath="$PROJECT_DIR$/.idea/continue.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../vscode/.idea/vscode.iml" filepath="$PROJECT_DIR$/../vscode/.idea/vscode.iml" />
     </modules>
   </component>
 </project>

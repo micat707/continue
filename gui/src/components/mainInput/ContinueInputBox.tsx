@@ -14,6 +14,7 @@ import { RulesPeek } from "./belowMainInput/RulesPeek";
 import { GradientBorder } from "./GradientBorder";
 import { ToolbarOptions } from "./InputToolbar";
 import { Lump } from "./Lump";
+import { LumpSlot } from "./Lump/LumpSlot";
 import { TipTapEditor } from "./TipTapEditor";
 
 interface ContinueInputBoxProps {
@@ -29,6 +30,13 @@ interface ContinueInputBoxProps {
   appliedRules?: RuleMetadata[];
   hidden?: boolean;
   inputId: string; // used to keep track of things per input in redux
+  /**
+   * Optional block rendered above the input frame INSIDE the reserved
+   * LumpSlot (the main composer passes the streaming status bar here, so the
+   * bar and the review-changes card share one high-water slot and their
+   * swaps never change the composer height).
+   */
+  aboveInput?: React.ReactNode;
 }
 
 const EDIT_DISALLOWED_CONTEXT_PROVIDERS = [
@@ -113,8 +121,21 @@ function ContinueInputBox(props: ContinueInputBoxProps) {
       data-testid={`continue-input-box-${props.inputId}`}
     >
       <div className={`relative flex flex-col px-2`}>
-        {props.isMainInput && <Lump />}
+        {props.isMainInput && (
+          <LumpSlot>
+            {props.aboveInput}
+            <Lump />
+          </LumpSlot>
+        )}
         <GradientBorder
+          className={
+            props.isMainInput ? "kiro-input-frame" : "kiro-bubble-frame"
+          }
+          /* Keep the rainbow sweep on the streaming BUBBLE too: loading=1 +
+             borderColor=undefined paints the repeating rainbow ring, which the
+             theme CSS reveals as a 1px animated border around the tinted pill.
+             The bubble stays a capsule (方案A) — only its 1px ring is rainbow
+             while the model is processing. */
           loading={isStreaming && (props.isLastUserInput || isInEdit) ? 1 : 0}
           borderColor={
             isStreaming && (props.isLastUserInput || isInEdit)

@@ -1,4 +1,5 @@
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
+import React from "react";
 import { LLMFullCompletionOptions, ModelDescription } from "core";
 import { getRuleId } from "core/llm/rules/getSystemMessageWithRules";
 import { ToCoreProtocol } from "core/protocol";
@@ -8,6 +9,7 @@ import { selectSelectedChatModel } from "../slices/configSlice";
 import {
   abortStream,
   addPromptCompletionPair,
+  clearDanglingMessages,
   errorToolCall,
   setActive,
   setAppliedRulesAtIndex,
@@ -18,6 +20,8 @@ import {
   setToolGenerated,
   streamUpdate,
 } from "../slices/sessionSlice";
+import { setDialogMessage, setShowDialog } from "../slices/uiSlice";
+import StreamErrorDialog from "../../pages/gui/StreamError";
 import { ThunkApiType } from "../store";
 import { constructMessages } from "../util/constructMessages";
 
@@ -36,6 +40,12 @@ import { callToolById } from "./callToolById";
 import { evaluateToolPolicies } from "./evaluateToolPolicies";
 import { preprocessToolCalls } from "./preprocessToolCallArgs";
 import { streamResponseAfterToolCall } from "./streamResponseAfterToolCall";
+
+// Per-stream sequence id, stamped on every request/response marker so that
+// concurrent LLM streams (parallel tool-call continuations) can be told apart
+// when debugging "stream interrupted by a concurrent request" issues: each
+// turn's request, first chunk, full completion and abort share the same id.
+let streamRequestSeq = 0;
 
 /**
  * Builds completion options with reasoning configuration based on session state and model capabilities.
@@ -190,12 +200,62 @@ export const streamNormalInput = createAsyncThunk<
     const { compiledChatMessages, didPrune, contextPercentage } =
       precompiledRes.content;
 
+    const start = Date.now();
+    const requestId = ++streamRequestSeq;
+
+    // Request preview (debug): print each message's role + a TRUNCATED content
+    // preview (full dumps are huge). The #N id is the important bit — it lets
+    // the request be correlated with its first chunk / completion / abort even
+    // across concurrent streams.
+    console.log(
+      `[streamNormalInput] ── request #${requestId} to model (${compiledChatMessages.length} messages) ──`,
+    );
+    compiledChatMessages.forEach((m, i) => {
+      const preview =
+        typeof m.content === "string"
+          ? m.content.slice(0, 300)
+          : Array.isArray(m.content)
+            ? m.content
+                .map((p) =>
+                  p.type === "text"
+                    ? String((p as { text?: unknown }).text ?? "").slice(0, 200)
+                    : p.type,
+                )
+                .join(" | ")
+            : typeof m.content;
+      console.log(
+        `[streamNormalInput]   [#${requestId}][${i}] role=${m.role} contentPreview=${JSON.stringify(preview)}`,
+      );
+    });
+
     dispatch(setIsPruned(didPrune));
     dispatch(setContextPercentage(contextPercentage));
 
-    const start = Date.now();
     const streamAborter = state.session.streamAborter;
+    // Captured so the turn-end branch (below, outside this try) can print the
+    // full reply when the model returns plain text with no tool call. Must be
+    // declared OUTSIDE the try — the turn-end branch references it.
+    let finalCompletion = "";
     try {
+      // Diagnostics for "the turn is stuck": these four markers tell whether
+      // the request was ever sent, whether the model answered at all, and
+      // whether the stream finished, was aborted or threw. Open the webview
+      // console with "Developer: Open Webview Developer Tools".
+      console.log(
+        `[continue] → LLM request #${requestId}`,
+        selectedChatModel.title,
+        `messages=${compiledChatMessages.length}`,
+        // Which tool protocol is in play, and how many tools are attached.
+        // native + tools>0 but the model never calls any → the ENDPOINT is
+        // dropping/ignoring the `tools` param (e.g. vLLM without
+        // --enable-auto-tool-choice/--tool-call-parser).
+        `mode=${systemToolsFramework ? "system-message" : "native"}`,
+        `activeTools=${activeTools.length}`,
+        `cap.tools=${selectedChatModel.capabilities?.tools}`,
+        // The actual tool names attached to the request — confirms e.g.
+        // whether a "read file" tool is present among the 13.
+        `tools=[${activeTools.map((t) => t.function.name).join(", ")}]`,
+      );
       let gen = extra.ideMessenger.llmStreamChat(
         {
           completionOptions,
@@ -214,19 +274,170 @@ export const streamNormalInput = createAsyncThunk<
         );
       }
 
-      let next = await gen.next();
+      // Watchdog: a silently-dropped connection (network cut overnight, proxy
+      // killing an idle SSE stream) delivers NO chunk and NO error, so the
+      // bare `await gen.next()` hangs forever with isStreaming stuck true and
+      // the tool-call chip spinning — the "卡了一晚上" report. Race every read
+      // against an inactivity timer; on stall, clean up exactly like the Stop
+      // button (setInactive + abortStream + clearDanglingMessages) and tell
+      // the user what happened.
+      const STREAM_INACTIVITY_TIMEOUT_MS = 3 * 60_000;
+      const readNext = () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+          gen.next(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `[continue] LLM stream stalled: no chunks for ${STREAM_INACTIVITY_TIMEOUT_MS / 1000}s — connection presumed dead`,
+                  ),
+                ),
+              STREAM_INACTIVITY_TIMEOUT_MS,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+      };
+      const handleStalledStream = (e: unknown): boolean => {
+        if (
+          !(e instanceof Error) ||
+          !e.message.includes("LLM stream stalled")
+        ) {
+          return false;
+        }
+        console.error("[continue] ✕", e.message, `#${requestId}`);
+        dispatch(setInactive());
+        dispatch(abortStream());
+        dispatch(clearDanglingMessages());
+        dispatch(
+          setDialogMessage(
+            React.createElement(StreamErrorDialog, {
+              error: new Error(
+                "模型响应流中断：超过 3 分钟没有收到任何数据，连接已按断开处理。请重试你的请求。",
+              ),
+            }),
+          ),
+        );
+        dispatch(setShowDialog(true));
+        return true;
+      };
+
+      let next: Awaited<ReturnType<typeof gen.next>>;
+      try {
+        next = await readNext();
+      } catch (e) {
+        if (handleStalledStream(e)) {
+          return;
+        }
+        throw e;
+      }
+      console.log(
+        `[continue] ← LLM first chunk #${requestId}`,
+        `${Date.now() - start}ms`,
+        next.done ? "(empty / done)" : "",
+      );
       while (!next.done) {
         if (!getState().session.isStreaming) {
+          if (streamAborter.signal.aborted) {
+            // A genuine cancellation (user pressed Stop, or a turn-cleanup
+            // requested the abort). Expected — no need to alarm the user.
+            console.log(
+              `[continue] ✕ LLM stream #${requestId} aborted (signal aborted)`,
+            );
+          } else {
+            // Spurious abort: the session was marked inactive mid-stream
+            // WITHOUT a cancel request (e.g. a turn-cleanup `setInactive`
+            // fired while this continuation was still generating). Left
+            // silent, the user just sees the chat die with no explanation —
+            // surface it so the interruption is visible, and so we stop
+            // silently swallowing the underlying bug.
+            console.log(
+              `[continue] ✕ LLM stream #${requestId} aborted by session state (spurious — no abort requested)`,
+            );
+            dispatch(
+              setDialogMessage(
+                React.createElement(StreamErrorDialog, {
+                  error: new Error(
+                    "The assistant response was interrupted unexpectedly (the session ended mid-stream without a cancel request). The conversation may be incomplete — re-run your request to continue.",
+                  ),
+                }),
+              ),
+            );
+            dispatch(setShowDialog(true));
+          }
           dispatch(abortStream());
           break;
         }
 
+        // Diagnostic: show the raw shape of any chunk carrying tool calls —
+        // if tool calls still go missing downstream, this proves whether
+        // they arrived at the GUI at all.
+        const toolCallChunk = next.value.find(
+          (m) => m.role === "assistant" && (m as any).toolCalls?.length,
+        );
+        if (toolCallChunk) {
+          console.log(
+            "[continue] ← chunk with toolCalls:",
+            JSON.stringify(toolCallChunk).slice(0, 400),
+          );
+        }
+
+        // Diagnostic: same for reasoning chunks — proves whether the provider
+        // streamed reasoning_content at all (no logs ⇒ the model did not
+        // think / enable_thinking was off, not a display bug).
+        const thinkingChunk = next.value.find((m) => m.role === "thinking");
+        if (thinkingChunk) {
+          console.log(
+            "[continue] ← chunk with thinking:",
+            JSON.stringify(thinkingChunk).slice(0, 200),
+          );
+        }
+
         dispatch(streamUpdate(next.value));
-        next = await gen.next();
+        try {
+          next = await readNext();
+        } catch (e) {
+          if (handleStalledStream(e)) {
+            return;
+          }
+          throw e;
+        }
       }
 
       // Attach prompt log and end thinking for reasoning models
       if (next.done && next.value) {
+        // Log the completion size and its tail: if the model hit maxTokens or
+        // the provider truncated the stream, the tail stops mid-sentence —
+        // that distinguishes "model chose to stop" from "output was cut off"
+        // (which explains turns that end right after the model announces its
+        // next step but never emits the tool call).
+        const completion = next.value.completion ?? "";
+        finalCompletion = completion;
+        console.log(
+          `[continue] ✓ LLM stream #${requestId} finished`,
+          `${Date.now() - start}ms`,
+          `completionChars=${completion.length}`,
+          `tail=${JSON.stringify(completion.slice(-80))}`,
+        );
+
+        // Full completion dump (debug): print the ENTIRE model output every
+        // turn instead of just the 80-char tail, so the agent loop can be
+        // inspected end-to-end — including tool-call arguments, which the tail
+        // slice usually cuts off.
+        console.log(
+          `[continue] ── #${requestId} full completion (${completion.length} chars) ──\n${completion}`,
+        );
+        const finishedMsg = Array.isArray(next.value)
+          ? next.value.find((m: any) => m?.role === "assistant")
+          : (next.value as any);
+        const toolCallsDump = (finishedMsg as any)?.toolCalls;
+        if (toolCallsDump?.length) {
+          console.log(
+            `[continue] ── tool calls (${toolCallsDump.length}) ──\n` +
+              JSON.stringify(toolCallsDump, null, 2),
+          );
+        }
         dispatch(addPromptCompletionPair([next.value]));
 
         try {
@@ -255,6 +466,12 @@ export const streamNormalInput = createAsyncThunk<
         }
       }
     } catch (e) {
+      // Was the request ever answered? `start` → now covers the whole wait.
+      console.error(
+        "[continue] ✕ LLM request failed",
+        `${Date.now() - start}ms`,
+        e instanceof Error ? e.message : e,
+      );
       const toolCallsToCancel = selectCurrentToolCalls(getState());
       if (
         toolCallsToCancel.length > 0 &&
@@ -331,6 +548,14 @@ export const streamNormalInput = createAsyncThunk<
 
     // 4. Execute remaining tool calls
     if (originalToolCalls.length === 0) {
+      // The model returned plain text with no tool call — the turn ends here.
+      // Print the full reply so it's auditable (vs. just the tail above),
+      // e.g. to confirm whether the reply was truncated mid-sentence (maxTokens)
+      // or deliberately ended.
+      console.log(
+        "[continue] turn ended — no tool calls; full model reply:",
+        finalCompletion,
+      );
       dispatch(setInactive());
     } else if (needsApprovalPolicies.length > 0) {
       const builtInReadonlyAutoApproved = autoApprovedPolicies.filter(

@@ -1,5 +1,5 @@
 // src/components/ThinkingBlockPeek.tsx
-import { ChevronDownIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
 import { ChevronUpIcon } from "@heroicons/react/24/solid";
 import { ChatHistoryItem } from "core";
 import { useEffect, useState } from "react";
@@ -7,7 +7,6 @@ import styled from "styled-components";
 
 import { AnimatedEllipsis } from "../../AnimatedEllipsis";
 import StyledMarkdownPreview from "../../StyledMarkdownPreview";
-import { Button } from "../../ui";
 
 const MarkdownWrapper = styled.div`
   & > div > *:first-child {
@@ -43,53 +42,66 @@ function ThinkingBlockPeek({
     redactedThinking &&
     prevItem.message.redactedThinking;
 
+  // While the model is still thinking we force the block open (arrow down,
+  // content streaming live) so the user can watch it reason; once it finishes
+  // we collapse it (arrow right) and let the user re-open at will.
+  const expanded = inProgress || open;
+
   useEffect(() => {
     if (inProgress) {
       setStartTime(Date.now());
       setElapsedTime("");
-    } else if (startTime) {
-      const endTime = Date.now();
-      const diff = endTime - startTime;
-      const diffString = `${(diff / 1000).toFixed(1)}s`;
-      setElapsedTime(diffString);
+    } else {
+      if (startTime) {
+        const endTime = Date.now();
+        const diff = endTime - startTime;
+        const diffString = `${(diff / 1000).toFixed(1)}s`;
+        setElapsedTime(diffString);
+      }
+      setOpen(false);
     }
   }, [inProgress]);
 
   return duplicateRedactedThinkingBlock ? null : (
     <div className="thread-message">
-      <div className="mt-1 flex flex-col px-4">
+      {/* Horizontal rhythm: .thread-message already supplies the 10px chat
+          gutter, so the label column adds only 4px (px-1) to land on the
+          same 14px left edge as reply text (.thread-message 10px +
+          StepContainer p-1 4px). No capsule border/padding — that would
+          re-indent the words and break alignment with the reply text. */}
+      <div className="mt-1 flex flex-col px-1">
         <div>
-          <Button
-            variant="outline"
-            className="text-description flex-0 border-border m-0 mb-2 flex min-w-0 cursor-pointer flex-row items-center gap-1.5 rounded-full border-[0.5px] border-solid px-3 text-xs transition-colors duration-200 ease-in-out hover:brightness-125"
+          <button
+            type="button"
             data-testid="thinking-block-peek"
-            aria-expanded={open}
+            aria-expanded={expanded}
             aria-controls={`thinking-block-content-${index}`}
             onClick={() => setOpen(!open)}
+            className="text-description m-0 mb-2 flex min-w-0 cursor-pointer flex-row items-center gap-1.5 border-0 bg-transparent p-0 text-xs transition-colors duration-200 ease-in-out hover:brightness-125"
           >
             {inProgress ? (
-              <span>
-                {redactedThinking ? "Redacted Thinking" : "Thinking"}
+              <span className="flex flex-row items-center gap-1.5">
+                {redactedThinking ? "深度思考（已脱敏）" : "深度思考"}
                 <AnimatedEllipsis />
               </span>
             ) : redactedThinking ? (
-              "Redacted Thinking"
+              "深度思考（已脱敏）"
             ) : (
-              "Thought" +
-              (elapsedTime ? ` for ${elapsedTime}` : "") +
-              (tokens ? ` (${tokens} tokens)` : "")
+              "深度思考" +
+              (elapsedTime ? `（${elapsedTime}）` : "") +
+              (tokens ? `（${tokens} tokens）` : "")
             )}
-            {open ? (
-              <ChevronUpIcon className="h-3 w-3" />
-            ) : (
+            {expanded ? (
               <ChevronDownIcon className="h-3 w-3" />
+            ) : (
+              <ChevronRightIcon className="h-3 w-3" />
             )}
-          </Button>
+          </button>
         </div>
         <div
           id={`thinking-block-content-${index}`}
           className={`overflow-y-auto transition-all duration-300 ease-in-out ${
-            open ? "max-h-[50vh] opacity-100" : "max-h-0 opacity-0"
+            expanded ? "max-h-[50vh] opacity-100" : "max-h-0 opacity-0"
           }`}
         >
           {redactedThinking ? (

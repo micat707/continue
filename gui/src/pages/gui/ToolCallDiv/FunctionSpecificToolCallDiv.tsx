@@ -4,6 +4,7 @@ import { EditOperation } from "core/tools/definitions/multiEdit";
 import { CreateFile } from "./CreateFile";
 import { EditFile } from "./EditFile";
 import { FindAndReplaceDisplay } from "./FindAndReplace";
+import { ReadFile } from "./ReadFile";
 import { RunTerminalCommand } from "./RunTerminalCommand";
 
 function FunctionSpecificToolCallDiv({
@@ -25,6 +26,10 @@ function FunctionSpecificToolCallDiv({
           fileContents={args?.contents ?? ""}
           historyIndex={historyIndex}
         />
+      );
+    case BuiltInToolNames.ReadFile:
+      return (
+        <ReadFile toolCallState={toolCallState} historyIndex={historyIndex} />
       );
     case BuiltInToolNames.EditExistingFile:
       return (

@@ -35,14 +35,38 @@ function stripInLineComment(line: string): string {
 }
 
 function parseThemeString(themeString: string | undefined): any {
-  themeString = themeString
-    ?.split("\n")
-    .filter((line) => {
-      return !line.trim().startsWith("//");
-    })
+  if (!themeString) {
+    return {};
+  }
+
+  // Strip block comments (/* ... */) which the inline stripper cannot handle,
+  // then strip line/inline // comments (string-aware), producing near-JSON.
+  const stripped = themeString
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
     .map(stripInLineComment)
     .join("\n");
-  return JSON.parse(themeString ?? "{}");
+
+  try {
+    // Fast path: valid JSON returned directly.
+    return JSON.parse(stripped);
+  } catch {
+    // Fallback: some theme files use unquoted property names (JSON5-style)
+    // and/or trailing commas. Quote bare keys and drop trailing commas, then retry.
+    try {
+      const fixed = stripped
+        .replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3')
+        .replace(/,(\s*[}\]])/g, "$1");
+      return JSON.parse(fixed);
+    } catch (e) {
+      console.warn(
+        "Continue: failed to parse theme JSON, falling back to {}",
+        e,
+      );
+      return {};
+    }
+  }
 }
 
 export function getThemeString(): string {

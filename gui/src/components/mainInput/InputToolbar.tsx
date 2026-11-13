@@ -175,39 +175,6 @@ function InputToolbar(props: InputToolbarProps) {
           }}
         >
           {!isInEdit && <ContextStatus />}
-          {!props.toolbarOptions?.hideUseCodebase && !isInEdit && (
-            <div className="hidden transition-colors duration-200 hover:underline md:flex">
-              <HoverItem
-                className={
-                  props.activeKey === "Meta" ||
-                  props.activeKey === "Control" ||
-                  props.activeKey === "Alt"
-                    ? "underline"
-                    : ""
-                }
-                onClick={(e) =>
-                  props.onEnter?.({
-                    useCodebase: false,
-                    noContext: !useActiveFile,
-                  })
-                }
-              >
-                <ToolTip
-                  place="top-end"
-                  content={`${
-                    useActiveFile
-                      ? "Send Without Active File"
-                      : "Send With Active File"
-                  } (${getMetaKeyLabel()}⏎)`}
-                >
-                  <span>
-                    {getMetaKeyLabel()}⏎{" "}
-                    {useActiveFile ? "No active file" : "Active file"}
-                  </span>
-                </ToolTip>
-              </HoverItem>
-            </div>
-          )}
           {isInEdit && (
             <HoverItem
               className="hidden hover:underline sm:flex"

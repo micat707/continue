@@ -191,11 +191,17 @@ const formatMessageForO1OrGpt5ForResponses = (
 };
 
 class OpenAI extends BaseLLM {
-  public useLegacyCompletionsEndpoint: boolean | undefined = undefined;
+  // Default to false: modern chat models are served via /chat/completions and
+  // most providers no longer implement the legacy /completions endpoint. Only
+  // set this to true (config flag, or the autocomplete/next-edit providers in
+  // CompletionProvider/NextEditProvider) when a model genuinely needs the
+  // legacy endpoint (e.g. old OpenAI base completion models, FIM autocomplete).
+  public useLegacyCompletionsEndpoint: boolean = false;
 
   constructor(options: LLMOptions) {
     super(options);
-    this.useLegacyCompletionsEndpoint = options.useLegacyCompletionsEndpoint;
+    this.useLegacyCompletionsEndpoint =
+      options.useLegacyCompletionsEndpoint ?? false;
     this.apiVersion = options.apiVersion ?? "2023-07-01-preview";
   }
 
@@ -517,12 +523,18 @@ class OpenAI extends BaseLLM {
     signal: AbortSignal,
     options: CompletionOptions,
   ): AsyncGenerator<ChatMessage> {
+    // Legacy /completions is now opt-in only (`useLegacyCompletionsEndpoint ===
+    // true`). It is no longer forced by `raw` (the apply/edit pipeline always
+    // passes raw: true) nor by NON_CHAT_MODELS — both used to push every stream
+    // onto the legacy endpoint, which modern providers reject. Callers that
+    // genuinely need /completions (FIM autocomplete, old base completion models)
+    // set the flag explicitly to true — see CompletionProvider/NextEditProvider.
+    const forceLegacy = this.useLegacyCompletionsEndpoint === true;
+
     if (
       !isChatOnlyModel(options.model) &&
       this.supportsCompletions() &&
-      (NON_CHAT_MODELS.includes(options.model) ||
-        this.useLegacyCompletionsEndpoint ||
-        options.raw)
+      forceLegacy
     ) {
       for await (const content of this._legacystreamComplete(
         renderChatMessage(messages[messages.length - 1]),
@@ -559,12 +571,24 @@ class OpenAI extends BaseLLM {
       return;
     }
 
+    // Capture the provider's finish_reason: "stop" = the model chose to end,
+    // "length" = hit maxTokens, "tool_calls" = it returned a native tool call,
+    // and ABSENT = the provider closed the stream early (truncation/network).
+    // This is the decisive diagnostic for turns that end with plain text and
+    // no tool call.
+    let finishReason: string | undefined;
     for await (const value of streamSse(response)) {
       const chunk = fromChatCompletionChunk(value);
       if (chunk) {
         yield chunk;
       }
+      if (value.choices?.[0]?.finish_reason) {
+        finishReason = value.choices[0].finish_reason as string;
+      }
     }
+    console.log(
+      `[continue][dev] LLM stream finish_reason: ${finishReason ?? "<absent — provider closed the stream early>"} model=${options.model}`,
+    );
   }
 
   // Minimal draft: Responses API support for select models

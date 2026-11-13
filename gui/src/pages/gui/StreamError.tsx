@@ -124,6 +124,14 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
           There was an error handling the response from{" "}
           {selectedModel?.title || "the model"}.
         </p>
+        {/* Original error from the provider (HTTP status + response body),
+            exactly as returned by the LLM API — shown verbatim so nothing
+            gets lost in generic wrapper text. */}
+        {message && (
+          <code className="text-editor-foreground mb-2 block max-h-48 overflow-y-auto whitespace-pre-wrap rounded-sm p-2 font-mono text-xs">
+            {message}
+          </code>
+        )}
         <p className="m-0 p-0">Please try to submit your message again.</p>
         <div className="mt-3">{resubmitButton}</div>
       </div>

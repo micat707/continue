@@ -21,6 +21,7 @@ import { convertToolCallStatesToSystemCallsAndOutput } from "core/tools/systemMe
 import { SystemMessageToolsFramework } from "core/tools/systemMessageTools/types";
 import { findLast, findLastIndex } from "core/util/findLast";
 import {
+  contextItemContentToText,
   normalizeToMessageParts,
   renderContextItems,
   renderContextItemsWithStatus,
@@ -84,7 +85,7 @@ export function constructMessages(
         .map((ctxItem) => {
           return {
             type: "text",
-            text: `${ctxItem.content}\n`,
+            text: `${contextItemContentToText(ctxItem.content)}\n`,
           } as TextMessagePart;
         })
         .filter((part) => !!part.text.trim());
@@ -221,10 +222,60 @@ export function constructMessages(
     });
   }
 
-  const messages = msgs.map((m) => m.message);
+  const messages = msgs
+    .map((m) => m.message)
+    .map((message) => sanitizeMessageContent(message));
+
   return {
     messages,
     appliedRules,
     appliedRuleIndex,
   };
+}
+
+/**
+ * Last line of defense: guarantee that every message's text content is a real
+ * string before it is sent to the model.
+ *
+ * If any upstream source (context items, restored history, tool outputs) hands
+ * us an object instead of a string, `toChatMessage` joins it with `String(...)`
+ * and the model receives the literal "[object Object]" instead of the user's
+ * message. Coercing here keeps the prompt sane and logs the offending value so
+ * the real source can be tracked down.
+ */
+function sanitizeMessageContent(message: ChatMessage): ChatMessage {
+  const content = message.content as unknown;
+
+  if (typeof content === "string") {
+    return message;
+  }
+
+  if (content == null) {
+    return { ...message, content: "" } as ChatMessage;
+  }
+
+  if (Array.isArray(content)) {
+    const safeParts = content.map((part: any) => {
+      if (part?.type !== "text" || typeof part.text === "string") {
+        return part;
+      }
+      console.warn(
+        "[constructMessages] Non-string text part coerced:",
+        message.role,
+        part.text,
+      );
+      return { ...part, text: contextItemContentToText(part.text) };
+    });
+    return { ...message, content: safeParts } as ChatMessage;
+  }
+
+  console.warn(
+    "[constructMessages] Non-string/array message content coerced:",
+    message.role,
+    content,
+  );
+  return {
+    ...message,
+    content: contextItemContentToText(content),
+  } as ChatMessage;
 }

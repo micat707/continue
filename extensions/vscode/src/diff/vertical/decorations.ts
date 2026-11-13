@@ -43,9 +43,16 @@ export const belowIndexDecorationType =
   });
 
 function translateRange(range: vscode.Range, lineOffset: number): vscode.Range {
+  // A negative offset (lines deleted above the range) can push a decorated
+  // range past line 0, which makes Position.translate throw
+  // "Illegal argument: line must be non-negative" and aborts the whole
+  // document-change event chain — observed with concurrent applies, leaving
+  // the apply state stuck at "Applying". Clamp so the start never goes
+  // negative.
+  const clamped = Math.max(lineOffset, -range.start.line);
   return new vscode.Range(
-    range.start.translate(lineOffset),
-    range.end.translate(lineOffset),
+    range.start.translate(clamped),
+    range.end.translate(clamped),
   );
 }
 

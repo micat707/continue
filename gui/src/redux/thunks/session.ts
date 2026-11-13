@@ -191,12 +191,17 @@ export const saveCurrentSession = createAsyncThunk<
   "session/saveCurrent",
   async ({ openNewSession, generateTitle }, { dispatch, extra, getState }) => {
     const session = getState().session; // assign to a variable so that even when current session changes, we have the reference to the old session
-    if (session.history.length === 0) {
-      return;
-    }
 
+    // Start the fresh session BEFORE the empty-history early return below:
+    // the native "+" button sends newSession even when the current session has
+    // no messages, and skipping the reset there made the button a silent no-op
+    // (no new session id → no new tab in the tab bar).
     if (openNewSession) {
       dispatch(newSession());
+    }
+
+    if (session.history.length === 0) {
+      return;
     }
 
     const selectedChatModel = selectSelectedChatModel(getState());

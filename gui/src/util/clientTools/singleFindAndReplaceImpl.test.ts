@@ -34,6 +34,22 @@ describe("singleFindAndReplaceImpl", () => {
             allowAnonymousTelemetry: false,
           },
         },
+        // The read-before-edit guard requires a successful read_file on the
+        // target file earlier in the session; seed one by default. Tests that
+        // exercise the guard itself override this.
+        session: {
+          history: [
+            {
+              toolCallStates: [
+                {
+                  status: "done",
+                  toolCall: { function: { name: "read_file" } },
+                  parsedArgs: { filepath: "/test/file.txt" },
+                },
+              ],
+            },
+          ],
+        },
       })) as any,
       dispatch: vi.fn() as any,
       ideMessenger: {
@@ -137,6 +153,23 @@ describe("singleFindAndReplaceImpl", () => {
 
     it("should resolve relative file paths", async () => {
       mockResolveRelativePathInDir.mockResolvedValue("/absolute/path/test.txt");
+      // Seed the read-before-edit guard for THIS test's resolved path.
+      vi.mocked(mockExtras.getState).mockReturnValue({
+        config: { config: { allowAnonymousTelemetry: false } },
+        session: {
+          history: [
+            {
+              toolCallStates: [
+                {
+                  status: "done",
+                  toolCall: { function: { name: "read_file" } },
+                  parsedArgs: { filepath: "/absolute/path/test.txt" },
+                },
+              ],
+            },
+          ],
+        },
+      } as any);
       mockExtras.ideMessenger.ide.readFile = vi
         .fn()
         .mockResolvedValue("test content");

@@ -358,9 +358,26 @@ export function fromChatCompletionChunk(
     | undefined;
 
   if (delta?.content) {
+    // Some OpenAI-compatible providers (SiliconFlow among them) send a single
+    // delta containing BOTH text and tool calls. Returning only the content
+    // here silently dropped those tool calls — the provider even reported
+    // finish_reason "tool_calls" while the GUI saw none and ended the turn.
+    const toolCalls = delta.tool_calls
+      ?.filter((tool_call) => !tool_call.type || tool_call.type === "function")
+      .map((tool_call) => ({
+        id: tool_call.id,
+        type: "function" as const,
+        function: {
+          name: (tool_call as any).function?.name,
+          arguments: (tool_call as any).function?.arguments,
+        },
+      }))
+      .filter((tc) => tc.function.name || tc.function.arguments);
+
     return {
       role: "assistant",
       content: delta.content,
+      ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
     };
   } else if (delta?.tool_calls) {
     const toolCalls = delta?.tool_calls
@@ -375,6 +392,9 @@ export function fromChatCompletionChunk(
       }));
 
     if (toolCalls.length > 0) {
+      console.log(
+        `[continue][dev] fromChatCompletionChunk: yielding tool_calls chunk (n=${toolCalls.length}, names=${toolCalls.map((t) => t.function.name).join(",")})`,
+      );
       return {
         role: "assistant",
         content: "",

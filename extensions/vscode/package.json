@@ -86,6 +86,157 @@
     "configuration": {
       "title": "Continue",
       "properties": {
+        "continue.deepAgentMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Route Continue's main chat through the DeepAgent engine loop (using the selected chat model as its inference engine). When off, the main chat uses the model directly as usual."
+        },
+        "continue.deepAgentRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Optional manual root override for DeepAgent's filesystem tools. Leave empty to automatically follow all VS Code workspace folders (including folders added with 'Add Folder to Workspace…')."
+        },
+        "continue.deepAgent.execute.env": {
+          "type": "object",
+          "default": {},
+          "description": "Extra environment variables injected into every DeepAgent shell command (execute tool), merged OVER the environment inherited from the IDE. Use for JAVA_HOME, PATH additions, etc. Takes effect immediately — the IDE's own inherited environment snapshot is only refreshed on a full IDE restart.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "continue.deepAgent.execute.commandTimeout": {
+          "type": "number",
+          "default": 120000,
+          "description": "Maximum time (in milliseconds) a DeepAgent shell command may run in the live terminal before it is considered timed out. On timeout the command is NOT killed — it is left running in the visible terminal (you can interact with it there) and the agent receives the partial output plus a timeout note. Defaults to 120000 (2 minutes). Set higher for long builds/tests."
+        },
+        "continue.deepAgent.permissions": {
+          "type": "object",
+          "description": "DeepAgent tool-permission policy. Merged with the global layer and the ephemeral session layer (first match wins). 'trustedDirs' are absolute paths treated as inside the trusted scope; 'trustRules' apply inside that scope, 'untrustRules' apply outside it. Each rule sets a tool's action to 'allow', 'ask', or 'deny'. The HARD RED LINE cannot be overridden: an outside-scope file tool (read_file/write_file/edit_file/delete_file/delete) can never be 'allow'.",
+          "properties": {
+            "trustedDirs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "trustRules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "ask",
+                      "deny"
+                    ]
+                  }
+                },
+                "required": [
+                  "tool",
+                  "action"
+                ]
+              },
+              "default": []
+            },
+            "untrustRules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "allow",
+                      "ask",
+                      "deny"
+                    ]
+                  }
+                },
+                "required": [
+                  "tool",
+                  "action"
+                ]
+              },
+              "default": []
+            }
+          },
+          "default": {
+            "trustedDirs": [],
+            "trustRules": [
+              {
+                "tool": "read_file",
+                "action": "allow"
+              },
+              {
+                "tool": "write_file",
+                "action": "allow"
+              },
+              {
+                "tool": "edit_file",
+                "action": "allow"
+              },
+              {
+                "tool": "delete_file",
+                "action": "ask"
+              },
+              {
+                "tool": "ls",
+                "action": "allow"
+              },
+              {
+                "tool": "glob",
+                "action": "allow"
+              },
+              {
+                "tool": "grep",
+                "action": "allow"
+              }
+            ],
+            "untrustRules": [
+              {
+                "tool": "read_file",
+                "action": "ask"
+              },
+              {
+                "tool": "write_file",
+                "action": "ask"
+              },
+              {
+                "tool": "edit_file",
+                "action": "ask"
+              },
+              {
+                "tool": "delete_file",
+                "action": "deny"
+              },
+              {
+                "tool": "delete",
+                "action": "deny"
+              },
+              {
+                "tool": "ls",
+                "action": "ask"
+              },
+              {
+                "tool": "glob",
+                "action": "ask"
+              },
+              {
+                "tool": "grep",
+                "action": "ask"
+              }
+            ]
+          }
+        },
         "continue.telemetryEnabled": {
           "type": "boolean",
           "default": true,
@@ -151,6 +302,37 @@
       }
     },
     "commands": [
+      {
+        "command": "continue.deepAgentTest",
+        "category": "Continue",
+        "title": "Deep Agent Test"
+      },
+      {
+        "command": "continue.deepAgentChat",
+        "category": "Continue",
+        "title": "Deep Agent Chat"
+      },
+      {
+        "command": "continue.toggleDeepAgent",
+        "category": "Continue",
+        "title": "Toggle DeepAgent Mode"
+      },
+      {
+        "command": "continue.setDeepAgentRoot",
+        "category": "Continue",
+        "title": "Set DeepAgent Root (Override)"
+      },
+      {
+        "command": "continue.deepAgent.openPermissionsPanel",
+        "category": "Continue",
+        "title": "Open DeepAgent Permission Settings"
+      },
+      {
+        "command": "continue.toggleChat",
+        "category": "Continue",
+        "title": "Toggle Chat",
+        "icon": "$(comment)"
+      },
       {
         "command": "continue.applyCodeFromChat",
         "category": "Continue",
@@ -238,6 +420,13 @@
       },
       {
         "command": "continue.newSession",
+        "category": "Continue",
+        "title": "New Session",
+        "icon": "$(add)",
+        "group": "Continue"
+      },
+      {
+        "command": "continue.newSessionFullScreen",
         "category": "Continue",
         "title": "New Session",
         "icon": "$(add)",
@@ -452,6 +641,11 @@
         "when": "!terminalFocus"
       },
       {
+        "command": "continue.toggleChat",
+        "mac": "cmd+alt+c",
+        "key": "ctrl+alt+c"
+      },
+      {
         "command": "continue.toggleTabAutocompleteEnabled",
         "mac": "cmd+k cmd+a",
         "key": "ctrl+k ctrl+a",
@@ -503,6 +697,9 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "continue.toggleChat"
+        },
         {
           "command": "continue.focusContinueInput"
         },
@@ -576,7 +773,11 @@
       ],
       "editor/title": [
         {
-          "command": "continue.newSession",
+          "command": "continue.toggleChat",
+          "group": "navigation@0"
+        },
+        {
+          "command": "continue.newSessionFullScreen",
           "group": "navigation@1",
           "when": "activeWebviewPanelId == continue.continueGUIView"
         },
@@ -594,7 +795,7 @@
       ]
     },
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "continue",
           "title": "Continue",
@@ -721,6 +922,13 @@
   "dependencies": {
     "@continuedev/config-types": "file:../../packages/config-types",
     "@continuedev/fetch": "file:../../packages/fetch",
+    "@langchain/core": "^1.3.2",
+    "@langchain/langgraph": "^1.4.10",
+    "@langchain/langgraph-checkpoint": "^1.1.5",
+    "@langchain/langgraph-sdk": "^1.9.23",
+    "langchain": "^1.5.10",
+    "langsmith": ">=0.7.1 <0.10.0",
+    "deepagents": "file:../../../deepagentsjs/libs/deepagents",
     "@electron/rebuild": "^4.0.3",
     "@reduxjs/toolkit": "^1.9.3",
     "@vscode/ripgrep": "^1.15.9",

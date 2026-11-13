@@ -214,6 +214,13 @@ function modelSupportsReasoning(
   if (model.model.includes("deepseek-r")) {
     return true;
   }
+  // Qwen3 hybrid-thinking family (Qwen3 / Qwen3.5 / QwQ) streams its chain of
+  // thought as `reasoning_content` on OpenAI-compatible endpoints
+  // (SiliconFlow, vLLM, DashScope...), rendered as the collapsible
+  // "深度思考" block in the GUI.
+  if (/qwen3|qwq/i.test(model.model)) {
+    return true;
+  }
   // o-series reasoning models
   if (/^o[134]/.test(model.model)) {
     return true;

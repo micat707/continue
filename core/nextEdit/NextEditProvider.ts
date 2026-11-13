@@ -21,6 +21,7 @@ import { AutocompleteInput } from "../autocomplete/util/types.js";
 import { isSecurityConcern } from "../indexing/ignore.js";
 import { modelSupportsNextEdit } from "../llm/autodetect.js";
 import { localPathOrUriToPath } from "../util/pathToUri.js";
+import { getFullLanguageName } from "../util/treeSitter.js";
 import { EditAggregator } from "./context/aggregateEdits.js";
 import { createDiff, DiffFormatType } from "./context/diffFormatting.js";
 import { DocumentHistoryTracker } from "./DocumentHistoryTracker.js";
@@ -417,10 +418,16 @@ export class NextEditProvider {
       diffContext: combinedDiffContext,
       autocompleteContext: this.autocompleteContext,
       historyDiff: createDiff({
+        // Only consult the AST history tracker for files we can actually parse.
+        // Plain/non-code files (e.g. .txt) have no tree-sitter grammar, so their
+        // edits are never tracked here — querying one just logs a noisy
+        // "not found in AST tracker" error. Skip such files entirely.
         beforeContent:
-          DocumentHistoryTracker.getInstance().getMostRecentDocumentHistory(
-            localPathOrUriToPath(helper.filepath),
-          ) ?? "",
+          getFullLanguageName(helper.filepath) !== undefined
+            ? (DocumentHistoryTracker.getInstance().getMostRecentDocumentHistory(
+                localPathOrUriToPath(helper.filepath),
+              ) ?? "")
+            : "",
         afterContent: helper.fileContents,
         filePath: helper.filepath,
         diffType: DiffFormatType.Unified,

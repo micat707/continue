@@ -9,6 +9,7 @@ import {
   TextMessagePart,
 } from "core";
 import { ctxItemToRifWithContents } from "core/commands/util";
+import { contextItemContentToText } from "core/util/messageContent";
 import { getUriDescription } from "core/util/uri";
 import { CodeBlock, Mention, PromptBlock } from "../extensions";
 import { GetContextRequest } from "./types";
@@ -96,7 +97,7 @@ export function processEditorContent(editorState: JSONContent) {
           rif.filepath,
           window.workspacePaths ?? [],
         );
-        const codeText = `\n\`\`\`${extension} ${relativePathOrBasename} (${rif.range.start.line + 1}-${rif.range.end.line + 1})\n${contextItem.content}\n\`\`\`\n`;
+        const codeText = `\n\`\`\`${extension} ${relativePathOrBasename} (${rif.range.start.line + 1}-${rif.range.end.line + 1})\n${contextItemContentToText(contextItem.content)}\n\`\`\`\n`;
 
         if (parts[parts.length - 1]?.type === "text") {
           (parts[parts.length - 1] as TextMessagePart).text += "\n" + codeText;

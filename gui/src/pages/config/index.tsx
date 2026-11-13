@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useContext, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Alert from "../../components/gui/Alert";
 import { Divider } from "../../components/ui/Divider";
 import { TabGroup } from "../../components/ui/TabGroup";
 import { useNavigationListener } from "../../hooks/useNavigationListener";
+import { IdeMessengerContext } from "../../context/IdeMessenger";
 import { bottomTabSections, getAllTabs, topTabSections } from "./configTabs";
 import { DeprecationBanner } from "../../components/DeprecationBanner";
 import { AccountDropdown } from "./features/account/AccountDropdown";
@@ -11,8 +12,23 @@ import { AccountDropdown } from "./features/account/AccountDropdown";
 function ConfigPage() {
   useNavigationListener();
   const navigate = useNavigate();
+  const ideMessenger = useContext(IdeMessengerContext);
   const [searchParams] = useSearchParams();
   const activeTab = searchParams.get("tab") || "settings";
+
+  // The sidebar webview is far too narrow for the config pages. When the user
+  // opens any config route there, hand it to a full editor-area tab that boots
+  // directly on this route (window.isFullScreen is injected by the extension:
+  // false = sidebar webview, true = full-screen editor tab).
+  useEffect(() => {
+    if ((window as any).isFullScreen === false) {
+      ideMessenger.post("deepAgent/openFullScreenConfig", {
+        page: `/config?tab=${activeTab}`,
+      });
+      navigate("/");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const allTabs = getAllTabs();
 

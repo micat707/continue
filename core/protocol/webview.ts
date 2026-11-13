@@ -41,4 +41,14 @@ export type ToWebviewFromIdeOrCoreProtocol = {
   "jetbrains/setColors": [Record<string, string | null | undefined>, void];
   sessionUpdate: [{ sessionInfo: any | undefined }, void];
   toolCallPartialOutput: [{ toolCallId: string; contextItems: any[] }, void];
+  // DeepAgent: live output of a running `execute` command, pushed to the
+  // "Run Command" card while the command runs. `chunk` is an INCREMENTAL slice of
+  // new (ANSI-stripped) output appended to the card (so the user can scroll back
+  // through the command's whole history); `done` + `exitCode` signal completion
+  // so the card can flip in place. Keyed by runId so multiple commands (and
+  // historical cards) never cross-contaminate the card content.
+  deepagentExecuteProgress: [
+    { runId: string; chunk?: string; done?: boolean; exitCode?: number | null },
+    void,
+  ];
 };

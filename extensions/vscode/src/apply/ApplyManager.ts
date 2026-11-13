@@ -10,6 +10,7 @@ import { ApplyAbortManager } from "core/edit/applyAbortManager";
 import { streamDiffLines } from "core/edit/streamDiffLines";
 import { pruneLinesFromBottom, pruneLinesFromTop } from "core/llm/countTokens";
 import { getMarkdownLanguageTagForFile } from "core/util";
+import * as URI from "uri-js";
 import { VerticalDiffManager } from "../diff/vertical/manager";
 import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
@@ -32,54 +33,101 @@ export class ApplyManager {
     toolCallId,
     isSearchAndReplace,
   }: ApplyToFilePayload) {
-    if (filepath) {
-      await this.ensureFileOpen(filepath);
-    }
-
-    const { activeTextEditor } = vscode.window;
-    if (!activeTextEditor) {
-      void vscode.window.showErrorMessage("No active editor to apply edits to");
-      return;
-    }
-
-    // Capture the original file content before applying changes
-    const originalFileContent = activeTextEditor.document.getText();
-
-    await this.webviewProtocol.request("updateApplyState", {
-      streamId,
-      status: "streaming",
-      fileContent: text,
-      originalFileContent,
-      toolCallId,
-    });
-
-    const hasExistingDocument = !!activeTextEditor.document.getText().trim();
-    if (hasExistingDocument) {
-      // Currently `isSearchAndReplace` will always provide a full file rewrite
-      // as the contents of `text`, so we can just instantly apply
-      if (isSearchAndReplace) {
-        await this.verticalDiffManager.instantApplyDiff(
-          originalFileContent,
-          text,
-          streamId,
-          toolCallId,
-        );
-      } else {
-        await this.handleExistingDocument(
-          activeTextEditor,
-          text,
-          streamId,
-          toolCallId,
-        );
+    console.log(
+      `[continue] applyToFile received — filepath=${filepath} isSearchAndReplace=${isSearchAndReplace} toolCallId=${toolCallId ?? "n/a"} chars=${text?.length ?? 0}`,
+    );
+    try {
+      if (filepath) {
+        await this.ensureFileOpen(filepath);
       }
-    } else {
-      await this.handleEmptyDocument(
-        activeTextEditor,
-        text,
-        streamId,
-        toolCallId,
+
+      // Resolve the editor for the TARGET file, not whatever editor happens to
+      // be active. Relying on activeTextEditor made the apply land on (or be
+      // silently dropped for) the wrong file whenever another file was focused
+      // — leaving the GUI stuck on "Applying" forever.
+      const editor = await this.resolveTargetEditor(filepath);
+      if (!editor) {
+        throw new Error("No active editor to apply edits to");
+      }
+
+      // Capture the original file content before applying changes
+      const originalFileContent = editor.document.getText();
+      console.log(
+        `[continue] applyToFile editor resolved — path=${editor.document.uri.toString()} docLines=${editor.document.lineCount}`,
       );
+
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "streaming",
+        fileContent: text,
+        originalFileContent,
+        toolCallId,
+      });
+
+      const hasExistingDocument = !!editor.document.getText().trim();
+      if (hasExistingDocument) {
+        // Currently `isSearchAndReplace` will always provide a full file rewrite
+        // as the contents of `text`, so we can just instantly apply
+        if (isSearchAndReplace) {
+          await this.verticalDiffManager.instantApplyDiff(
+            originalFileContent,
+            text,
+            streamId,
+            toolCallId,
+            filepath,
+          );
+        } else {
+          await this.handleExistingDocument(
+            editor,
+            text,
+            streamId,
+            toolCallId,
+            filepath,
+          );
+        }
+      } else {
+        await this.handleEmptyDocument(editor, text, streamId, toolCallId);
+      }
+    } catch (e) {
+      // Terminal failure state — without this the GUI apply status stays on
+      // "streaming" forever ("Applying..." / the applying status bar hangs).
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(`[continue] applyToFile failed: ${message}`);
+      void vscode.window.showErrorMessage(
+        `Failed to apply changes: ${message}`,
+      );
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath,
+        // Surface the underlying failure (e.g. HTTP 404 / model-not-found from
+        // the apply model) to the GUI so it can show the user WHY the edit
+        // failed instead of a generic "Edit Failed".
+        error: message,
+      });
     }
+  }
+
+  /**
+   * Resolves a TextEditor for the target file. Prefers an already-visible
+   * editor for the file; otherwise activates it. Falls back to the active
+   * editor when no filepath is known.
+   */
+  private async resolveTargetEditor(
+    filepath?: string,
+  ): Promise<vscode.TextEditor | undefined> {
+    if (filepath) {
+      const visible = vscode.window.visibleTextEditors.find((e) =>
+        URI.equal(e.document.uri.toString(), filepath),
+      );
+      if (visible) {
+        return visible;
+      }
+      const doc = await vscode.workspace.openTextDocument(filepath);
+      return vscode.window.showTextDocument(doc);
+    }
+    return vscode.window.activeTextEditor ?? undefined;
   }
 
   private async ensureFileOpen(filepath: string): Promise<void> {
@@ -119,6 +167,7 @@ export class ApplyManager {
     text: string,
     streamId: string,
     toolCallId?: string,
+    targetFileUri?: string,
   ) {
     const { config } = await this.configHandler.loadConfig();
     if (!config) {
@@ -153,6 +202,7 @@ export class ApplyManager {
         isInstantApply,
         streamId,
         toolCallId,
+        targetFileUri ?? fileUri,
       );
     } else {
       await this.handleNonInstantDiff(
@@ -163,6 +213,7 @@ export class ApplyManager {
         this.verticalDiffManager,
         toolCallId,
         !this.modelIsTooFastForStreaming(llm.model),
+        targetFileUri ?? fileUri,
       );
     }
   }
@@ -213,6 +264,7 @@ export class ApplyManager {
     verticalDiffManager: VerticalDiffManager,
     toolCallId?: string,
     streaming: boolean = true,
+    targetFileUri?: string,
   ) {
     const { config } = await this.configHandler.loadConfig();
     if (!config) {
@@ -262,6 +314,7 @@ export class ApplyManager {
           true, // Apply instantly since we accumulated all content
           streamId,
           toolCallId,
+          targetFileUri,
         );
       }
     }

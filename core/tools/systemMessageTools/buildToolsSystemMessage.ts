@@ -61,7 +61,10 @@ export const generateToolsSystemMessage = (
   instructions.push("\n" + framework.systemMessageSuffix);
 
   instructions.push(`${closeTag(TOOL_INSTRUCTIONS_TAG)}`);
-  return instructions.join("\n");
+
+  const joined = instructions.join("\n");
+
+  return joined;
 };
 
 export function addSystemMessageToolsToSystemMessage(

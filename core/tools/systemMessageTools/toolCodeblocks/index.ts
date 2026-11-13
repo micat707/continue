@@ -1,4 +1,5 @@
 import { Tool, ToolCallState } from "../../..";
+import { contextItemContentToText } from "../../../util/messageContent";
 import { SystemMessageToolsFramework } from "../types";
 import { handleToolCallBuffer } from "./parseSystemToolCall";
 
@@ -34,7 +35,7 @@ export class SystemMessageToolCodeblocksFramework
     let toolDefinition = `\`\`\`tool_definition\nTOOL_NAME: ${tool.function.name}\n`;
 
     if (tool.function.description) {
-      toolDefinition += `TOOL_DESCRIPTION:\n${tool.function.description}\n`;
+      toolDefinition += `TOOL_DESCRIPTION:\n${contextItemContentToText(tool.function.description)}\n`;
     }
 
     if (tool.function.parameters && "properties" in tool.function.parameters) {
@@ -46,11 +47,19 @@ export class SystemMessageToolCodeblocksFramework
 
         let argType = "string";
         if ("type" in value) {
-          argType = value.type;
+          const typeValue = (value as { type?: unknown }).type;
+          argType =
+            typeof typeValue === "string"
+              ? typeValue
+              : Array.isArray(typeValue)
+                ? typeValue.join(" | ")
+                : JSON.stringify(typeValue);
         }
         let argDescription = "";
         if ("description" in value) {
-          argDescription = value.description;
+          argDescription = contextItemContentToText(
+            (value as { description?: unknown }).description,
+          );
         }
 
         toolDefinition += `TOOL_ARG: ${key} (${argType}, ${requiredText})\n`;
@@ -114,7 +123,7 @@ TOOL_NAME: ${toolName}`;
     for (const [argName, argValue] of exampleArgs) {
       callExample += `
 BEGIN_ARG: ${argName}
-${argValue}
+${contextItemContentToText(argValue)}
 END_ARG`;
     }
 

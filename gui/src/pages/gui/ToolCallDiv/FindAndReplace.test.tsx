@@ -12,6 +12,7 @@ vi.mock("../../../context/IdeMessenger", () => ({
 }));
 
 vi.mock("../../../redux/hooks", () => ({
+  useAppDispatch: vi.fn(() => vi.fn()),
   useAppSelector: vi.fn(),
 }));
 
@@ -158,7 +159,7 @@ describe("FindAndReplaceDisplay", () => {
       expect(screen.getByText("+")).toBeInTheDocument();
     });
 
-    it("should show content when tool call status is 'generated'", () => {
+    it("should stay collapsed for 'generated' status until expanded", () => {
       mockUseAppSelector.mockImplementation((selector: any) => {
         const mockState = {
           config: { config: mockConfig },
@@ -180,7 +181,10 @@ describe("FindAndReplaceDisplay", () => {
 
       render(<FindAndReplaceDisplay {...defaultProps} />);
 
-      // Should show diff content without expanding
+      // Details never auto-expands (auto expansion shoved the conversation
+      // while streaming). The user expands it explicitly.
+      expect(screen.queryByText("-")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("toggle-find-and-replace-diff"));
       expect(screen.getByText("-")).toBeInTheDocument();
       expect(screen.getByText("+")).toBeInTheDocument();
     });

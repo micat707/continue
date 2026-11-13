@@ -172,6 +172,10 @@ export class MessageIde implements IDE {
     await this.request("removeFile", { path: fileUri });
   }
 
+  async createDirectory(fileUri: string): Promise<void> {
+    await this.request("createDirectory", { path: fileUri });
+  }
+
   async showVirtualFile(title: string, contents: string): Promise<void> {
     await this.request("showVirtualFile", { name: title, content: contents });
   }

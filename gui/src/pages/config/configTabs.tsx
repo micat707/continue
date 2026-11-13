@@ -1,5 +1,4 @@
 import {
-  ArrowLeftIcon,
   CircleStackIcon,
   Cog6ToothIcon,
   CubeIcon,
@@ -13,6 +12,7 @@ import { ConfigsSection } from "./sections/ConfigsSection";
 import { HelpSection } from "./sections/HelpSection";
 import { IndexingSettingsSection } from "./sections/IndexingSettingsSection";
 import { ModelsSection } from "./sections/ModelsSection";
+import { PermissionsSection } from "./sections/PermissionsSection";
 import { RulesSection } from "./sections/RulesSection";
 import { ToolsSection } from "./sections/ToolsSection";
 import { UserSettingsSection } from "./sections/UserSettingsSection";
@@ -34,19 +34,7 @@ interface TabSection {
 
 export const topTabSections: TabSection[] = [
   {
-    id: "top",
-    tabs: [
-      {
-        id: "back",
-        label: "Back",
-        component: <div />,
-        icon: <ArrowLeftIcon className="xs:h-4 xs:w-4 h-3 w-3 flex-shrink-0" />,
-      },
-    ],
-  },
-  {
     id: "blocks",
-    showTopDivider: true,
     tabs: [
       {
         id: "models",
@@ -113,6 +101,22 @@ export const topTabSections: TabSection[] = [
         icon: (
           <CircleStackIcon className="xs:h-4 xs:w-4 h-3 w-3 flex-shrink-0" />
         ),
+      },
+    ],
+  },
+  {
+    id: "deepagent",
+    showTopDivider: true,
+    tabs: [
+      {
+        id: "permissions",
+        label: "权限",
+        component: (
+          <ConfigSection>
+            <PermissionsSection />
+          </ConfigSection>
+        ),
+        icon: <Cog6ToothIcon className="xs:h-4 xs:w-4 h-3 w-3 flex-shrink-0" />,
       },
     ],
   },

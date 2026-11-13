@@ -21,7 +21,10 @@ import { ToolTip } from "../gui/Tooltip";
 import FilenameLink from "./FilenameLink";
 import "./katex.css";
 import "./markdown.css";
+import EditOutcomeCard from "./EditOutcomeCard";
 import MermaidBlock from "./MermaidBlock";
+import ReadOutcomeCard from "./ReadOutcomeCard";
+import CommandOutcomeCard from "./CommandOutcomeCard";
 import { rehypeHighlightPlugin } from "./rehypeHighlightPlugin";
 import { SecureImageComponent } from "./SecureImageComponent";
 import { StepContainerPreToolbar } from "./StepContainerPreToolbar";
@@ -31,6 +34,12 @@ import { isSymbolNotRif, matchCodeToSymbolOrFile } from "./utils";
 import { fixDoubleDollarNewLineLatex } from "./utils/fixDoubleDollarLatex";
 import { patchNestedMarkdown } from "./utils/patchNestedMarkdown";
 import { remarkTables } from "./utils/remarkTables";
+import {
+  COMMAND_CARD_LANGUAGE,
+  EDIT_CARD_LANGUAGE,
+  READ_CARD_LANGUAGE,
+  rewriteDeepAgentToolBlocks,
+} from "./utils/rewriteDeepAgentToolBlocks";
 
 const StyledMarkdown = styled.div<{
   fontSize?: number;
@@ -123,8 +132,11 @@ const StyledMarkdown = styled.div<{
     "Helvetica Neue",
     sans-serif;
   font-size: ${(props) => props.fontSize || getFontSize()}px;
-  padding-left: 8px;
-  padding-right: 8px;
+  /* Horizontal gutter is now provided by the .kiro-chat-scroll container
+     (padding: 0 8px, matching Kiro's container-level inset), so the markdown
+     itself needs no horizontal padding — keep only 0. */
+  padding-left: 0;
+  padding-right: 0;
   color: ${vscForeground};
 
   p,
@@ -155,6 +167,8 @@ interface StyledMarkdownPreviewProps {
   toolCallId?: string;
   expandCodeblocks?: boolean;
   collapsible?: boolean;
+  /** When true, render a blinking caret at the end of the content (streaming effect). */
+  isStreaming?: boolean;
 }
 
 const HLJS_LANGUAGE_CLASSNAME_PREFIX = "language-";
@@ -295,6 +309,18 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
           const preChildProps = preProps?.children?.[0]?.props ?? {};
           const { className, range } = preChildProps;
 
+          // An edit_file / read_file card replaces the whole fenced block —
+          // no code block toolbar and no <pre> wrapper, it renders as a
+          // standalone card.
+          if (
+            typeof className === "string" &&
+            (className.includes(`language-${EDIT_CARD_LANGUAGE}`) ||
+              className.includes(`language-${READ_CARD_LANGUAGE}`) ||
+              className.includes(`language-${COMMAND_CARD_LANGUAGE}`))
+          ) {
+            return <>{preProps.children}</>;
+          }
+
           const relativeFilePath = preChildProps["data-relativefilepath"];
           const codeBlockContent = preChildProps["data-codeblockcontent"];
 
@@ -331,6 +357,44 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
           );
         },
         code: ({ ...codeProps }) => {
+          if (codeProps.className?.includes(`language-${EDIT_CARD_LANGUAGE}`)) {
+            // `data-codeblockcontent` is the raw fence value set by the remark
+            // plugin, so it is immune to rehype-highlight splitting children.
+            return (
+              <EditOutcomeCard
+                payload={String(
+                  codeProps["data-codeblockcontent"] ??
+                    getCodeChildrenContent(codeProps.children) ??
+                    "",
+                )}
+              />
+            );
+          }
+          if (codeProps.className?.includes(`language-${READ_CARD_LANGUAGE}`)) {
+            return (
+              <ReadOutcomeCard
+                payload={String(
+                  codeProps["data-codeblockcontent"] ??
+                    getCodeChildrenContent(codeProps.children) ??
+                    "",
+                )}
+              />
+            );
+          }
+          if (
+            codeProps.className?.includes(`language-${COMMAND_CARD_LANGUAGE}`)
+          ) {
+            return (
+              <CommandOutcomeCard
+                payload={String(
+                  codeProps["data-codeblockcontent"] ??
+                    getCodeChildrenContent(codeProps.children) ??
+                    "",
+                )}
+              />
+            );
+          }
+
           const content = getCodeChildrenContent(codeProps.children);
 
           if (content) {
@@ -374,7 +438,9 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
   useEffect(() => {
     setMarkdownSource(
       // some patches to source markdown are applied here:
-      fixDoubleDollarNewLineLatex(patchNestedMarkdown(props.source ?? "")),
+      rewriteDeepAgentToolBlocks(
+        fixDoubleDollarNewLineLatex(patchNestedMarkdown(props.source ?? "")),
+      ),
     );
   }, [props.source, allSymbols]);
 
@@ -386,6 +452,7 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
       fontSize={getFontSize()}
       whiteSpace={codeWrapState}
       bgColor={props.useParentBackgroundColor ? "" : vscBackground}
+      className={props.isStreaming ? "continue-streaming" : undefined}
     >
       {reactContent}
     </StyledMarkdown>

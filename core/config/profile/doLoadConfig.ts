@@ -33,6 +33,7 @@ import { getWorkspaceContinueRuleDotFiles } from "../getWorkspaceContinueRuleDot
 import { loadContinueConfigFromJson } from "../load";
 import { CodebaseRulesCache } from "../markdown/loadCodebaseRules";
 import { loadMarkdownRules } from "../markdown/loadMarkdownRules";
+import { loadSteeringRules } from "../markdown/loadSteeringRules";
 import { migrateJsonSharedConfig } from "../migrateSharedConfig";
 import { rectifySelectedModelsFromGlobalContext } from "../selectedModels";
 import { loadContinueConfigFromYaml } from "../yaml/loadYaml";
@@ -52,6 +53,12 @@ async function loadRules(ide: IDE) {
     await loadMarkdownRules(ide);
   rules.unshift(...markdownRules);
   errors.push(...markdownRulesErrors);
+
+  // Add steering rules from .micat/steering (MicatCode, mirrors Kiro steering)
+  const { rules: steeringRules, errors: steeringErrors } =
+    await loadSteeringRules(ide);
+  rules.unshift(...steeringRules);
+  errors.push(...steeringErrors);
 
   // Add colocated rules from CodebaseRulesCache
   const codebaseRulesCache = CodebaseRulesCache.getInstance();

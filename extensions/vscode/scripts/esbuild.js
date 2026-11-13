@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 
 const { writeBuildTimestamp } = require("./utils");
 
@@ -25,6 +26,12 @@ const esbuildConfig = {
   define: { "import.meta.url": "importMetaUrl" },
   supported: { "dynamic-import": false },
   metafile: true,
+  // deepagents is consumed from its TypeScript *source* (package.json main ->
+  // src). Its bare imports (`langchain`, `@langchain/core/...`, `zod/v4`,
+  // `micromatch`, ...) must resolve against THIS extension's node_modules,
+  // which is not on the upward walk from the deepagents clone directory.
+  // nodePaths makes esbuild look here for bare specifiers.
+  nodePaths: [path.resolve(__dirname, "..", "node_modules")],
   plugins: [
     {
       name: "on-end-plugin",

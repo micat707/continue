@@ -15,6 +15,11 @@ export const ROUTES = {
   CONFIG: "/config",
   THEME: "/theme",
   STATS: "/stats",
+  // MicatCode Workspace feature entries (mirror Kiro Steering/Specs/Hooks/Power)
+  STEERING: "/steering",
+  SPECS: "/specs",
+  HOOKS: "/hooks",
+  POWER: "/power",
   // EXAMPLE_ROUTE_WITH_PARAMS: (params: ParamsType) => `/route/${params}`,
 };
 

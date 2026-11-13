@@ -33,8 +33,13 @@ const LayoutTopDiv = styled(CustomScrollbarDiv)`
 const GridDiv = styled.div`
   display: grid;
   grid-template-rows: 1fr auto;
+  /* minmax(0, 1fr) lets the single column shrink below its content's
+     min-content. Without it, a wide chat row (terminal, review-changes card)
+     expands the grid column, the whole panel grows past the viewport and the
+     right side gets clipped by LayoutTopDiv's overflow-x: hidden. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
-  overflow-x: visible;
+  overflow-x: hidden;
 `;
 
 const Layout = () => {
@@ -205,6 +210,7 @@ const Layout = () => {
               minHeight: "100%",
               display: "grid",
               gridTemplateRows: "1fr auto",
+              gridTemplateColumns: "minmax(0, 1fr)",
             }}
           >
             <TextDialog

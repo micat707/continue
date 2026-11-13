@@ -25,6 +25,9 @@ export const handleApplyStateUpdate = createAsyncThunk<
 >(
   "apply/handleStateUpdate",
   async (applyState, { dispatch, getState, extra }) => {
+    console.log(
+      `[continue][apply] updateApplyState status=${applyState.status} streamId=${applyState.streamId} toolCallId=${applyState.toolCallId ?? "n/a"} filepath=${applyState.filepath ?? "n/a"}`,
+    );
     if (applyState.streamId === EDIT_MODE_STREAM_ID) {
       dispatch(updateEditStateApplyState(applyState));
 
@@ -40,13 +43,28 @@ export const handleApplyStateUpdate = createAsyncThunk<
       }
     } else {
       // chat or agent
-      dispatch(updateApplyState(applyState));
+      // Some IDE paths send status updates WITHOUT toolCallId (e.g. the
+      // acceptDiff command -> processDiff -> "closed" event). The stored apply
+      // state knows its owning tool call, so recover it — otherwise the
+      // "closed" bookkeeping below never runs and the edit gets stuck forever
+      // with a spinning card and no LLM continuation.
+      let effectiveState = applyState;
+      if (!effectiveState.toolCallId) {
+        const stored =
+          getState?.()?.session?.codeBlockApplyStates?.states?.find(
+            (s) => s.streamId === effectiveState.streamId,
+          );
+        if (stored?.toolCallId) {
+          effectiveState = { ...effectiveState, toolCallId: stored.toolCallId };
+        }
+      }
+      dispatch(updateApplyState(effectiveState));
 
       // Handle apply status updates - use toolCallId from event payload
-      if (applyState.toolCallId) {
+      if (effectiveState.toolCallId) {
         const toolCallState = findToolCallById(
           getState().session.history,
-          applyState.toolCallId,
+          effectiveState.toolCallId,
         );
 
         if (
@@ -58,6 +76,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
           extra.ideMessenger.post("acceptDiff", {
             streamId: applyState.streamId,
             filepath: applyState.filepath,
+            toolCallId: effectiveState.toolCallId,
           });
         }
 
@@ -88,7 +107,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
               if (toolCallState.status !== "errored") {
                 dispatch(
                   acceptToolCall({
-                    toolCallId: applyState.toolCallId,
+                    toolCallId: effectiveState.toolCallId,
                   }),
                 );
 
@@ -96,7 +115,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
                 if (applyState.autoFormattingDiff) {
                   dispatch(
                     updateToolCallOutput({
-                      toolCallId: applyState.toolCallId,
+                      toolCallId: effectiveState.toolCallId,
                       contextItems: [
                         {
                           icon: "info",
@@ -111,7 +130,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
                 } else {
                   dispatch(
                     updateToolCallOutput({
-                      toolCallId: applyState.toolCallId,
+                      toolCallId: effectiveState.toolCallId,
                       contextItems: [
                         {
                           name: "Edit Success",
@@ -126,7 +145,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
               } else {
                 dispatch(
                   updateToolCallOutput({
-                    toolCallId: applyState.toolCallId,
+                    toolCallId: effectiveState.toolCallId,
                     contextItems: [
                       {
                         name: "Edit Failed",
@@ -141,12 +160,63 @@ export const handleApplyStateUpdate = createAsyncThunk<
 
               void dispatch(
                 streamResponseAfterToolCall({
-                  toolCallId: applyState.toolCallId,
+                  toolCallId: effectiveState.toolCallId,
                 }),
               );
             }
           }
         }
+
+        if (applyState.status === "failed") {
+          // Terminal apply failure (IDE couldn't apply/stream the diff).
+          // Surface it as a VISIBLE tool output so the user sees why the edit
+          // failed (e.g. an HTTP 404 / model-not-found from the apply model),
+          // finish the tool call and let the LLM continue so it can retry —
+          // instead of hanging forever on "Applying" with a spinning card, or
+          // dying silently.
+          if (toolCallState && toolCallState.status !== "canceled") {
+            const failReason = applyState.error
+              ? `\n\nUnderlying error: ${applyState.error}`
+              : "";
+            dispatch(
+              updateToolCallOutput({
+                toolCallId: effectiveState.toolCallId,
+                contextItems: [
+                  {
+                    name: "Edit Failed",
+                    content: `Failed to apply changes to ${applyState.filepath ?? "the file"}.${failReason}\n\nRead the file again to see its current content, then retry the edit.`,
+                    description: "",
+                    hidden: false,
+                  },
+                ],
+              }),
+            );
+            if (toolCallState.status !== "errored") {
+              dispatch(
+                acceptToolCall({
+                  toolCallId: effectiveState.toolCallId,
+                }),
+              );
+            }
+            void dispatch(
+              streamResponseAfterToolCall({
+                toolCallId: effectiveState.toolCallId,
+              }),
+            );
+          }
+        }
+      } else if (applyState.status === "failed") {
+        // Apply failure with no owning tool call (e.g. the manual "Apply"
+        // button on a code block sends applyToFile without one). Nothing else
+        // surfaces it — without this toast the failure is silently dropped
+        // and the session just stops with no visible error.
+        const failReason = applyState.error
+          ? `: ${applyState.error}`
+          : ". See the Continue console for the underlying error.";
+        void extra.ideMessenger.ide.showToast(
+          "error",
+          `Failed to apply changes to ${applyState.filepath ?? "the file"}${failReason}`,
+        );
       }
     }
   },
@@ -168,8 +238,25 @@ export const applyForEditTool = createAsyncThunk<
 
   let didError = false;
   try {
-    const response = await extra.ideMessenger.request("applyToFile", payload);
-    if (response.status === "error") {
+    // Guard against a hung IDE-side apply (e.g. the apply-model request never
+    // resolves because the provider returned an empty/broken response — seen
+    // as "Unexpected end of JSON input" in the Continue console). Without a
+    // timeout the apply state stays "streaming" forever and the status bar
+    // hangs on 正在应用更改 with a dead 停止 button.
+    const APPLY_TIMEOUT_MS = 120_000;
+    let timedOut = false;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+    }, APPLY_TIMEOUT_MS);
+    try {
+      const response = await extra.ideMessenger.request("applyToFile", payload);
+      if (response.status === "error") {
+        didError = true;
+      }
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
+    if (timedOut) {
       didError = true;
     }
   } catch (e) {
@@ -186,30 +273,15 @@ export const applyForEditTool = createAsyncThunk<
       applyState.status !== "closed" &&
       toolCallState.status === "calling"
     ) {
-      dispatch(
-        errorToolCall({
-          toolCallId,
-        }),
-      );
-      dispatch(
-        updateToolCallOutput({
-          toolCallId,
-          contextItems: [
-            {
-              icon: "problems",
-              name: "Apply Error",
-              description: "Failed to apply changes",
-              content: `Error editing file: failed to apply changes to file.\n\nPlease try again with correct args or notify the user and request further instructions.`,
-              hidden: false,
-            },
-          ],
-        }),
-      );
+      // Route through the "failed" terminal state so the tool call is finished
+      // with an error output and the LLM is resumed — it can read the file and
+      // retry the edit, instead of the turn just dying silently.
       void dispatch(
         handleApplyStateUpdate({
-          status: "closed",
+          status: "failed",
           streamId: applyState.streamId,
           toolCallId,
+          filepath: payload.filepath,
         }),
       );
     }

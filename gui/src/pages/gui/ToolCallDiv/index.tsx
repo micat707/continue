@@ -27,11 +27,13 @@ export function ToolCallDiv({
 
   if (!toolCallStates?.length) return null;
 
-  const isStreamingComplete = toolCallStates.every(
-    (toolCall) => toolCall.status !== "generating",
-  );
-
-  const shouldShowGroupedUI = toolCallStates.length > 1 && isStreamingComplete;
+  // Group whenever there are 2+ calls in the item — NOT gated on streaming
+  // completeness. Gating on it made the whole block re-parent from loose rows
+  // into the bordered group container the moment the first call started
+  // executing ("generating" -> "calling"), which read as a mid-flow flash.
+  // Mounting the group from the first render keeps the structure stable
+  // through generating -> calling -> done.
+  const shouldShowGroupedUI = toolCallStates.length > 1;
   const activeCalls = toolCallStates.filter(
     (call) => call.status !== "canceled",
   );

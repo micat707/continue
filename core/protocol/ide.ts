@@ -24,10 +24,18 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   getWorkspaceDirs: [undefined, string[]];
   writeFile: [{ path: string; contents: string }, void];
   removeFile: [{ path: string }, void];
+  createDirectory: [{ path: string }, void];
   showVirtualFile: [{ name: string; content: string }, void];
   openFile: [{ path: string }, void];
+  // Ask the user where to save the given content, write it to disk, and open
+  // the file in the editor. Returns the saved file path, or undefined if the
+  // user dismissed the save dialog.
+  exportSession: [{ name: string; content: string }, string | undefined];
   openUrl: [string, void];
   runCommand: [{ command: string; options?: TerminalOptions }, void];
+  // Reveal/focus the DeepAgent's shared integrated terminal so the user can
+  // watch the real command output live (Run Command card's terminal icon).
+  showAgentTerminal: [{}, void];
   getSearchResults: [{ query: string; maxResults?: number }, string];
   getFileResults: [{ pattern: string; maxResults?: number }, string[]];
   subprocess: [{ command: string; cwd?: string }, [string, string]];

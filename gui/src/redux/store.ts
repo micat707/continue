@@ -42,6 +42,14 @@ const saveSubsetFilters = [
     // Persist edit mode in case closes in middle
     "mode",
 
+    // Persist the actual conversation. Without this, a webview reload (crash,
+    // window refresh, extension reload) wipes the in-memory history and the
+    // user sees the conversation "cleared" — while no newSession is ever
+    // dispatched, which is why the trace never fired. The IDE-side disk copy
+    // remains the source of truth; this just keeps the live view intact across
+    // reloads.
+    "history",
+
     // higher risk to persist
     // codeBlockApplyStates
     // symbols

@@ -32,8 +32,19 @@ export const GradientBorder = styled.div<{
   animation: ${(props) => (props.loading ? gradient : "")} 6s linear infinite;
   background-size: 200% 200%;
   width: 100%;
+  /* CRITICAL for edge alignment: with the default content-box sizing,
+     width:100% + padding:1px makes the frame 2px WIDER than its container,
+     overflowing to the RIGHT — the input frame's right edge then hangs 2px
+     past the streaming bar above it at every screen size. border-box makes
+     the frame's outer box exactly fill the container content box. */
+  box-sizing: border-box;
   display: flex;
   flex-direction: row;
   align-items: center;
-  margin-top: ${(props) => (props.loading ? "8px" : "")};
+  /* NO loading-conditional margin here: margin-top used to flip between 8px
+     and 0 as the loading prop toggled, which shifted the streaming user
+     bubble (and everything below it) by 8px every time a turn started,
+     continued or ended — the "question content refreshes" flicker after
+     confirming an edit. Spacing is owned by the parent rows (kiro-user-row /
+     composer wrapper). */
 `;

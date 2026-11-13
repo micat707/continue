@@ -31,6 +31,21 @@ describe("multiEditImpl GUI specific", () => {
     mockExtras = {
       getState: vi.fn(() => ({
         config: { config: { allowAnonymousTelemetry: false } },
+        // The read-before-edit guard requires a successful read_file on the
+        // target file earlier in the session; seed one by default.
+        session: {
+          history: [
+            {
+              toolCallStates: [
+                {
+                  status: "done",
+                  toolCall: { function: { name: "read_file" } },
+                  parsedArgs: { filepath: "file:///dir/test/file.txt" },
+                },
+              ],
+            },
+          ],
+        },
       })) as any,
       dispatch: vi.fn() as any,
       ideMessenger: {

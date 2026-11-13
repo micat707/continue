@@ -1058,7 +1058,8 @@ declare global {
   export type ApplyStateStatus =
     | "streaming" // Changes are being applied to the file
     | "done" // All changes have been applied, awaiting user to accept/reject
-    | "closed"; // All changes have been applied. Note that for new files, we immediately set the status to "closed"
+    | "closed" // All changes have been applied. Note that for new files, we immediately set the status to "closed"
+    | "failed"; // Applying the changes failed — terminal state so the GUI never hangs on "streaming"
   
   export interface ApplyState {
     streamId: string;
@@ -1068,6 +1069,9 @@ declare global {
     fileContent?: string;
     originalFileContent?: string;
     autoFormattingDiff?: string;
+    sessionId?: string;
+    /** Underlying apply failure message (e.g. HTTP 404 / model not found). */
+    error?: string;
   }
   
   export interface RangeInFileWithContents {

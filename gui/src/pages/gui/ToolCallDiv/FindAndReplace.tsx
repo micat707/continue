@@ -1,4 +1,3 @@
-import { ChevronDownIcon } from "@heroicons/react/24/outline";
 import { ApplyState } from "core";
 import { trimEmptyLines } from "core/edit/searchAndReplace/findAndReplaceUtils";
 import { executeFindAndReplace } from "core/edit/searchAndReplace/performReplace";
@@ -7,16 +6,23 @@ import { renderContextItems } from "core/util/messageContent";
 import { getLastNPathParts, getUriPathBasename } from "core/util/uri";
 import { diffLines } from "diff";
 import { useContext, useMemo, useState } from "react";
-import { ApplyActions } from "../../../components/StyledMarkdownPreview/StepContainerPreToolbar/ApplyActions";
-import { FileInfo } from "../../../components/StyledMarkdownPreview/StepContainerPreToolbar/FileInfo";
 import { IdeMessengerContext } from "../../../context/IdeMessenger";
-import { useAppSelector } from "../../../redux/hooks";
+import { useAppDispatch, useAppSelector } from "../../../redux/hooks";
+import { cancelToolCall } from "../../../redux/slices/sessionSlice";
 import {
   selectApplyStateByToolCallId,
   selectToolCallById,
 } from "../../../redux/selectors/selectToolCalls";
 import { cn } from "../../../util/cn";
-import { getStatusIcon } from "./utils";
+import Spinner from "../../../components/gui/Spinner";
+import {
+  CompareChangesIcon,
+  DiscardIcon,
+  EditIcon,
+  RevertedIcon,
+  ChevronDownIcon,
+  FileIcon,
+} from "./OutcomeIcons";
 
 interface FindAndReplaceDisplayProps {
   fileUri?: string; // Added during args preprocessing
@@ -70,19 +76,6 @@ function DiffLines({
   );
 }
 
-function DiffStats({ added, removed }: { added: number; removed: number }) {
-  if (added === 0 && removed === 0) {
-    return null;
-  }
-
-  return (
-    <div className="flex items-center gap-1 font-mono text-xs">
-      {added > 0 && <span className="text-success">+{added}</span>}
-      {removed > 0 && <span className="text-error">-{removed}</span>}
-    </div>
-  );
-}
-
 export function FindAndReplaceDisplay({
   fileUri,
   newFileContents,
@@ -93,6 +86,7 @@ export function FindAndReplaceDisplay({
   historyIndex,
 }: FindAndReplaceDisplayProps) {
   const [isExpanded, setIsExpanded] = useState<boolean | undefined>(undefined);
+  const dispatch = useAppDispatch();
   const ideMessenger = useContext(IdeMessengerContext);
   const applyState: ApplyState | undefined = useAppSelector((state) =>
     selectApplyStateByToolCallId(state, toolCallId),
@@ -101,7 +95,14 @@ export function FindAndReplaceDisplay({
   const toolCallState = useAppSelector((state) =>
     selectToolCallById(state, toolCallId),
   );
-  const showContent = isExpanded ?? toolCallState?.status === "generated";
+  // Details is ALWAYS collapsed unless the user expands it. Any automatic
+  // expansion (approval preview, status transitions) grows the card while the
+  // conversation is streaming above it and shoves the whole message list —
+  // every "expand then snap shut" / "jumps up on Accept" report traced back to
+  // an auto-expanded Details. The diff preview during approval lives in the
+  // composer's review card ("View changes") and the editor's diff overlay,
+  // which don't occupy message-flow space.
+  const showContent = isExpanded ?? false;
   const config = useAppSelector((state) => state.config.config);
 
   const displayName = useMemo(() => {
@@ -158,106 +159,173 @@ export function FindAndReplaceDisplay({
     }
   }, [currentFileContent, newFileContents, edits]);
 
-  const diffStats = useMemo(() => {
-    if (!diffResult?.diff) {
-      return { added: 0, removed: 0 };
-    }
-
-    let added = 0;
-    let removed = 0;
-
-    diffResult.diff.forEach((part) => {
-      const lines = part.value.split("\n");
-      // Exclude empty line at the end (similar to DiffLines component logic)
-      const lineCount =
-        lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
-
-      if (part.added) {
-        added += lineCount;
-      } else if (part.removed) {
-        removed += lineCount;
-      }
-    });
-
-    return { added, removed };
-  }, [diffResult?.diff]);
-
-  const statusIcon = useMemo(() => {
+  // Kiro's "accepted edit" badge is a circled pencil (green when done, amber
+  // while pending). Once reverted, Kiro swaps it for a green circled check.
+  const statusGlyph = useMemo(() => {
     const status = toolCallState?.status;
-    if (status) {
+    if (status === "generating" || status === "calling") {
+      return <Spinner />;
+    }
+    if (status === "canceled") {
+      return <RevertedIcon />;
+    }
+    return <EditIcon />;
+  }, [toolCallState?.status]);
+
+  // Kiro-style outcome header: status icon + tool title + file label, e.g.
+  // "✓ Replace in File [TestB.txt]". The title mirrors the tool's configured
+  // displayTitle so it stays consistent with the rest of the UI.
+  const availableTools = useAppSelector((state) => state.config.config?.tools);
+  // Title shown on the finished card. The find step is invisible plumbing —
+  // what the user did was replace content, so the card says "Replace" rather
+  // than the tool's configured "Find and Replace".
+  const toolTitle = useMemo(() => {
+    const name = toolCallState?.toolCall?.function?.name;
+    if (name === "multi_edit") return "Multi-Edit";
+    if (name === "single_find_and_replace") return "Replace";
+    const tool = availableTools?.find((t) => t.function?.name === name);
+    return tool?.displayTitle ?? "Edit File";
+  }, [toolCallState?.toolCall?.function?.name, availableTools]);
+
+  const fileReference = fileUri ?? relativeFilePath ?? "";
+
+  // File pill (shared by the running row and the review card).
+  const fileLabelButton = (
+    <button
+      type="button"
+      className="file-label"
+      title={fileReference}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (fileUri) {
+          ideMessenger.post("openFile", { path: fileUri });
+        }
+      }}
+    >
+      <FileIcon />
+      <span className="file-label-name">{displayName || "..."}</span>
+    </button>
+  );
+
+  // Kiro-style agent-outcome card: a summary row (status icon + tool title +
+  // file label + action buttons) and a collapsible "Details" row that reveals
+  // the diff. Layout/classes mirror kiro-ui-agent-chat's .agent-outcome.
+  const renderContainer = (content: React.ReactNode) => {
+    const isReverted = toolCallState?.status === "canceled";
+    const isAccepted = toolCallState?.status === "done" || isReverted;
+
+    // Read/execute phase (Kiro-style): a single quiet status row — spinner +
+    // tool title + file pill. The full card (action buttons + Details diff)
+    // only appears once the edit actually needs review.
+    if (
+      toolCallState?.status === "generating" ||
+      toolCallState?.status === "calling"
+    ) {
+      // The find step happens silently inside the tool; what the user is
+      // watching is a replacement, so the running row just says "Replace"
+      // (or "Multi-Edit") instead of the full tool title.
+      const runningTitle =
+        toolCallState?.toolCall?.function?.name === "multi_edit"
+          ? "Multi-Edit"
+          : "Replace";
       return (
-        <div
-          className={`mr-1 h-4 w-4 flex-shrink-0 ${toolCallState.output ? "cursor-pointer" : ""}`}
-          onClick={(e) => {
-            if (toolCallState.output) {
-              e.stopPropagation();
-              ideMessenger.post("showVirtualFile", {
-                name: "Edit output",
-                content: renderContextItems(toolCallState.output),
-              });
-            }
-          }}
-        >
-          {getStatusIcon(status)}
+        <div className="agent-outcome agent-outcome--running">
+          <div className="agent-outcome-summary">
+            <span className="agent-outcome-status agent-icon-pending">
+              {statusGlyph}
+            </span>
+            <span className="tool-call-title">{runningTitle}</span>
+            {fileLabelButton}
+          </div>
         </div>
       );
     }
-  }, [toolCallState?.status, toolCallState?.output]);
-
-  // Unified container component that always renders the same structure
-  const renderContainer = (content: React.ReactNode) => (
-    <div className="outline-command-border -outline-offset-0.5 rounded-default bg-editor mx-2 my-1 flex min-w-0 flex-col outline outline-1">
-      <div
-        className={`find-widget-skip bg-editor sticky -top-2 z-10 m-0 flex cursor-pointer items-center justify-between gap-3 px-1.5 py-1 ${showContent ? "rounded-t-default border-command-border border-b" : "rounded-default"}`}
-        onClick={() => {
-          setIsExpanded(!showContent);
-        }}
-      >
-        <div className="flex min-w-0 flex-1 flex-row items-center gap-2 text-xs">
-          <div className="flex min-w-0 flex-row items-center">
-            {statusIcon}
-            <ChevronDownIcon
-              data-testid="toggle-find-and-replace-diff"
-              className={`text-lightgray h-3.5 w-3.5 flex-shrink-0 cursor-pointer select-none transition-all hover:brightness-125 ${
-                showContent ? "rotate-0" : "-rotate-90"
-              }`}
-            />
-            <FileInfo
-              filepath={displayName || "..."}
-              onClick={(e) => {
-                if (!fileUri) {
-                  return;
-                }
+    return (
+      <div className="agent-outcome">
+        <div className="agent-outcome-summary">
+          <span
+            className={`agent-outcome-status ${
+              isAccepted ? "agent-icon-accepted" : "agent-icon-pending"
+            }`}
+            style={toolCallState?.output ? { cursor: "pointer" } : undefined}
+            onClick={(e) => {
+              if (toolCallState?.output) {
                 e.stopPropagation();
-                ideMessenger.post("openFile", { path: fileUri });
-              }}
-            />
-          </div>
-          <DiffStats added={diffStats.added} removed={diffStats.removed} />
+                ideMessenger.post("showVirtualFile", {
+                  name: "Edit output",
+                  content: renderContextItems(toolCallState.output),
+                });
+              }
+            }}
+          >
+            {statusGlyph}
+          </span>
+          {isReverted && (
+            <span className="agent-outcome-reverted">(reverted)</span>
+          )}
+          <span className="tool-call-title">{toolTitle}</span>
+          {fileLabelButton}
+          {!isReverted && (
+            <ul className="action-bar agent-outcome-actions">
+              <li className="action-item">
+                <button
+                  type="button"
+                  className="kiro-button kiro-icon-button"
+                  title="View diff"
+                  aria-label="View diff"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ideMessenger.post("showChanges", {
+                      title: `Changes in ${displayName || "file"}`,
+                      files: [{ filepath: fileReference }],
+                    });
+                  }}
+                >
+                  <CompareChangesIcon />
+                </button>
+              </li>
+              <li className="action-item">
+                <button
+                  type="button"
+                  className="kiro-button kiro-icon-button"
+                  title="Revert"
+                  aria-label="Revert"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dispatch(cancelToolCall({ toolCallId }));
+                    if (applyState) {
+                      ideMessenger.post("rejectDiff", {
+                        filepath: fileUri,
+                        streamId: applyState.streamId,
+                      });
+                    }
+                  }}
+                >
+                  <DiscardIcon />
+                </button>
+              </li>
+            </ul>
+          )}
         </div>
-
-        {applyState && (
-          <ApplyActions
-            onClickAccept={() => {
-              ideMessenger.post(`acceptDiff`, {
-                filepath: fileUri,
-                streamId: applyState.streamId,
-              });
-            }}
-            onClickReject={() => {
-              ideMessenger.post(`rejectDiff`, {
-                filepath: fileUri,
-                streamId: applyState.streamId,
-              });
-            }}
-            disableManualApply={true}
-            applyState={applyState}
-          />
+        {!isReverted && (
+          <div className="kiro-inline-diff">
+            <button
+              type="button"
+              className="kiro-inline-diff-header"
+              data-testid="toggle-find-and-replace-diff"
+              onClick={() => setIsExpanded(!showContent)}
+            >
+              <ChevronDownIcon className={showContent ? "expanded" : ""} />
+              <span className="kiro-inline-diff-title">Details</span>
+            </button>
+            {showContent && (
+              <div className="agent-outcome-details">{content}</div>
+            )}
+          </div>
         )}
       </div>
-      {showContent ? content : null}
-    </div>
-  );
+    );
+  };
 
   if (diffResult?.error) {
     return (

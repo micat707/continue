@@ -5,8 +5,13 @@ import { LumpToolbar } from "./LumpToolbar/LumpToolbar";
  */
 export function Lump() {
   return (
-    <div className="bg-input rounded-t-default border-command-border mx-1.5 border-l border-r border-t">
-      <div className="xs:px-2 px-1 py-0.5">
+    /* No margin / side borders / horizontal padding of its own: the Lump must
+       share the EXACT horizontal footprint of the GradientBorder input frame
+       below (both live in the same `px-2` wrapper in ContinueInputBox), so the
+       review card's left/right edges line up with the input box's edges at any
+       width. Visible border/background come from the panel itself. */
+    <div className="kiro-lump">
+      <div className="py-0.5">
         <LumpToolbar />
       </div>
     </div>

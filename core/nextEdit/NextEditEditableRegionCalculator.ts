@@ -1,6 +1,7 @@
 import Parser from "web-tree-sitter";
 import { Chunk, IDE, ILLM, Position, Range, RangeInFile } from "..";
 import { getAst } from "../autocomplete/util/ast";
+import { getFullLanguageName } from "../util/treeSitter";
 import { NEXT_EDIT_MODELS } from "../llm/constants";
 import { DocumentHistoryTracker } from "./DocumentHistoryTracker";
 import { MODEL_WINDOW_SIZES } from "./constants";
@@ -472,8 +473,12 @@ async function staticJump(ctx: {
 
     // Get the file's AST.
     // Getting this once helps us live-track the current node.
+    // Skip files with no tree-sitter grammar (e.g. .txt): querying the tracker
+    // for them just logs a noisy "not found in AST tracker" error.
     const tree =
-      await DocumentHistoryTracker.getInstance().getMostRecentAst(filepath);
+      getFullLanguageName(filepath) !== undefined
+        ? await DocumentHistoryTracker.getInstance().getMostRecentAst(filepath)
+        : null;
     // const tree = await getAst(filepath, fileContent);
     if (!tree) return null;
 

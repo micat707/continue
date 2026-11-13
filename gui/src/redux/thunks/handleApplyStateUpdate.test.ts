@@ -485,21 +485,15 @@ describe("applyForEditTool", () => {
       const thunk = applyForEditTool(payload);
       await thunk(mockDispatch, mockGetState, mockExtra);
 
-      expect(errorToolCall).toHaveBeenCalledWith({
-        toolCallId: "test-tool-call",
-      });
-      expect(updateToolCallOutput).toHaveBeenCalledWith({
-        toolCallId: "test-tool-call",
-        contextItems: [
-          {
-            icon: "problems",
-            name: "Apply Error",
-            description: "Failed to apply changes",
-            content: `Error editing file: failed to apply changes to file.\n\nPlease try again with correct args or notify the user and request further instructions.`,
-            hidden: false,
-          },
-        ],
-      });
+      // Errors are routed through the "failed" terminal apply state
+      // (handleApplyStateUpdate thunk), which marks the tool call finished
+      // with an error output and resumes the LLM so it can retry.
+      const failedStateDispatch = mockDispatch.mock.calls.find(
+        ([action]) => typeof action === "function",
+      );
+      expect(failedStateDispatch).toBeDefined();
+      expect(errorToolCall).not.toHaveBeenCalled();
+      expect(updateToolCallOutput).not.toHaveBeenCalled();
     });
 
     it("should handle IDE messenger error response", async () => {
@@ -530,21 +524,13 @@ describe("applyForEditTool", () => {
       const thunk = applyForEditTool(payload);
       await thunk(mockDispatch, mockGetState, mockExtra);
 
-      expect(errorToolCall).toHaveBeenCalledWith({
-        toolCallId: "test-tool-call",
-      });
-      expect(updateToolCallOutput).toHaveBeenCalledWith({
-        toolCallId: "test-tool-call",
-        contextItems: [
-          {
-            icon: "problems",
-            name: "Apply Error",
-            description: "Failed to apply changes",
-            content: `Error editing file: failed to apply changes to file.\n\nPlease try again with correct args or notify the user and request further instructions.`,
-            hidden: false,
-          },
-        ],
-      });
+      // Same "failed" terminal-state routing as the rejected-request case.
+      const failedStateDispatch = mockDispatch.mock.calls.find(
+        ([action]) => typeof action === "function",
+      );
+      expect(failedStateDispatch).toBeDefined();
+      expect(errorToolCall).not.toHaveBeenCalled();
+      expect(updateToolCallOutput).not.toHaveBeenCalled();
     });
 
     it("should not error if tool call is not in calling state", async () => {

@@ -47,7 +47,7 @@ export function UserSettingsSection() {
   const promptPath = config.experimental?.promptPath || "";
 
   // TODO defaults are in multiple places, should be consolidated and probably not explicit here
-  const showSessionTabs = config.ui?.showSessionTabs ?? false;
+  const showSessionTabs = config.ui?.showSessionTabs ?? true;
   const continueAfterToolRejection =
     config.ui?.continueAfterToolRejection ?? false;
   const codeWrap = config.ui?.codeWrap ?? false;

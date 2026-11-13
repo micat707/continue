@@ -1,0 +1,208 @@
+{
+  "main": {
+    "id": "1e12484d99154cb7",
+    "type": "split",
+    "children": [
+      {
+        "id": "effc8a319340d088",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4bede899621a5b8a",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "09-构建与打包脚本速查.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "09-构建与打包脚本速查"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "0e224e9c00f84b61",
+    "type": "split",
+    "children": [
+      {
+        "id": "edbf774df8584b19",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "9de5dd41af8500fc",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "a3f3ca15ae9914c9",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "ea98a099a2094caf",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "0e20ada463f64fe7",
+    "type": "split",
+    "children": [
+      {
+        "id": "686fa0875e697187",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "381a3b990744777b",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "09-构建与打包脚本速查.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "反向链接"
+            }
+          },
+          {
+            "id": "f8c69253c203f883",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "09-构建与打包脚本速查.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "出链"
+            }
+          },
+          {
+            "id": "7e6d02b0d0308b11",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "ad51b29eaed11da7",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "6dbf70a8d7589afd",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "09-构建与打包脚本速查.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "4bede899621a5b8a",
+  "lastOpenFiles": [
+    "08-改造Continue为右侧锁死Chat面板.md",
+    "09-构建与打包脚本速查.md",
+    "10-Kiro从Continue到自研的演变对照.md",
+    "11-把Continue内置进fork发行版.md",
+    "04-VSCode-Chat-Participant-API.md",
+    "03-VSCode-Webview-API.md",
+    "02-Continue如何实现VSCode钩子与接口.md",
+    "00-Continue整体架构总图.md",
+    "07-Continue从页面Chat到streamChat的调用链路.md",
+    "06-Continue的OpenAI-Adapters协议转换.md",
+    "02-Continue的Agent-Harness实现.md",
+    "01-实现一个类Continue的带界面插件.md",
+    "05-Continue的Diff生成与渲染.md",
+    "00-总览-MOC.md"
+  ]
+}

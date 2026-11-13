@@ -27,6 +27,16 @@ export const PROVIDER_TOOL_SUPPORT: Record<string, (model: string) => boolean> =
         return true;
       }
 
+      // The Qwen3 family (including Qwen3-Coder) natively supports function
+      // calling on OpenAI-compatible endpoints (SiliconFlow, vLLM, etc.).
+      // Without this, models like "Qwen/Qwen3-Coder-30B-A3B-Instruct" fall
+      // back to the fragile text-based tool protocol, which small models
+      // frequently emit malformed (BEGIN_ARGS/inline args) — causing empty
+      // tool names, "Tool not found", and turns that end mid-intent.
+      if (lower.includes("qwen3")) {
+        return true;
+      }
+
       // LGAI EXAONE models expose an OpenAI-compatible API with tool
       // calling support when served via frameworks like vLLM
       if (lower.includes("exaone")) {
@@ -248,6 +258,20 @@ export const PROVIDER_TOOL_SUPPORT: Record<string, (model: string) => boolean> =
       }
 
       return false;
+    },
+    // https://docs.siliconflow.cn/cn/api-reference/chat-completions/chat-completions
+    // SiliconFlow serves OpenAI-compatible endpoints with native function
+    // calling for the major agent model families. Without this entry, a
+    // config that fails to surface `capabilities: [tool_use]` (e.g. a flaky
+    // hot-reload) silently downgrades these models to the text-based tool
+    // protocol.
+    siliconflow: (model) => {
+      const lower = model.toLowerCase();
+      return (
+        lower.includes("qwen3") ||
+        lower.includes("deepseek") ||
+        lower.includes("glm-4")
+      );
     },
     inception: (model) => {
       const lower = model.toLowerCase();

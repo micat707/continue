@@ -187,12 +187,21 @@ export function StepContainerPreToolbar({
       return;
     }
 
-    // applyToFile will create the file if it doesn't exist
-    ideMessenger.post("applyToFile", {
+    // applyToFile will create the file if it doesn't exist. Use a request (not
+    // a fire-and-forget post) so a failed apply — e.g. the apply model's
+    // stream dying with "Unexpected end of JSON input" — surfaces an error to
+    // the user instead of the session silently terminating with no feedback.
+    const response = await ideMessenger.request("applyToFile", {
       streamId: codeBlockStreamId,
       filepath: fileUri,
       text: codeBlockContent,
     });
+    if (response.status === "error") {
+      void ideMessenger.ide.showToast(
+        "error",
+        `Failed to apply changes to ${fileUri}: ${response.error}`,
+      );
+    }
 
     setAppliedFileUri(fileUri);
     void refreshFileExists();

@@ -48,10 +48,112 @@ import { Battery } from "./util/battery";
 import { getMetaKeyLabel } from "./util/util";
 import { openEditorAndRevealRange } from "./util/vscode";
 import { VsCodeIde } from "./VsCodeIde";
+import { toggleGUI } from "./chatToggle.js";
 
-let fullScreenPanel: vscode.WebviewPanel | undefined;
+import { createDeepAgent } from "deepagents";
+import { HumanMessage } from "@langchain/core/messages";
+import { ContinueLLMAdapter } from "./deepagents/ContinueLLMAdapter";
+import { DeepAgentChatPanel } from "./deepagents/DeepAgentChatPanel";
+import { wrapWithDeepAgent } from "./deepagents/DeepAgentLLM";
+import {
+  createWorkspaceBackend,
+  describeRoots,
+  pickRootOverride,
+} from "./deepagents/workspaceBackend";
 
-function getFullScreenTab() {
+// DeepAgent "engine mode" state: when ON, Continue's main chat is driven by the
+// DeepAgent loop (using the selected model as its engine). Selector unchanged.
+let deepAgentEnabled = false;
+/**
+ * Optional manual root override. When undefined, DeepAgent's file tools follow
+ * `vscode.workspace.workspaceFolders` (every folder in Explorer) automatically.
+ */
+let deepAgentRoot: string | undefined;
+
+// Status bar = always-visible proof of which engine the main chat will use.
+let deepAgentStatusBar: vscode.StatusBarItem | undefined;
+let deepAgentLastTurnAt: number | undefined;
+let deepAgentWrapped = false;
+
+function updateDeepAgentStatusBar() {
+  if (!deepAgentStatusBar) return;
+  const hit = deepAgentLastTurnAt
+    ? ` · hit ${new Date(deepAgentLastTurnAt).toLocaleTimeString()}`
+    : "";
+  deepAgentStatusBar.text = deepAgentEnabled
+    ? `$(hubot) DeepAgent: ON${hit}`
+    : "$(hubot) DeepAgent: OFF";
+  deepAgentStatusBar.backgroundColor = deepAgentEnabled
+    ? undefined
+    : new vscode.ThemeColor("statusBarItem.warningBackground");
+  deepAgentStatusBar.tooltip = deepAgentEnabled
+    ? `Main chat is routed through DeepAgent (model: ${deepAgentWrapped ? "wrapped" : "NOT wrapped"})\nWorkspace: ${describeRoots(deepAgentRoot)}\nLast turn: ${deepAgentLastTurnAt ? new Date(deepAgentLastTurnAt).toLocaleString() : "none yet"}\nClick to turn OFF`
+    : "Main chat uses the model directly (Continue native).\nClick to turn ON DeepAgent";
+  deepAgentStatusBar.show();
+}
+
+function markDeepAgentTurn() {
+  deepAgentLastTurnAt = Date.now();
+  updateDeepAgentStatusBar();
+}
+
+/** Write a persisted setting without letting a settings failure abort a command. */
+async function setDeepAgentSetting(key: string, value: boolean | string) {
+  try {
+    await vscode.workspace
+      .getConfiguration("continue")
+      .update(key, value, vscode.ConfigurationTarget.Global);
+  } catch (e) {
+    console.warn(`[DeepAgent] could not persist ${key}: ${String(e)}`);
+  }
+}
+
+/** Wrap (or unwrap) the selected chat model with DeepAgentLLM per the flag. */
+function applyDeepAgentWrap(config: any) {
+  const chat = config?.selectedModelByRole?.chat;
+  const arr: any[] | undefined = config?.modelsByRole?.chat;
+
+  if (deepAgentEnabled && chat) {
+    if (!(chat as any).__deepAgent) {
+      const wrapped = wrapWithDeepAgent(chat, deepAgentRoot, markDeepAgentTurn);
+      config.selectedModelByRole.chat = wrapped;
+      if (arr) {
+        const i = arr.findIndex((m) => m.title === chat.title);
+        if (i >= 0) arr[i] = wrapped;
+      }
+      console.log(
+        `[DeepAgent] chat model "${chat.title ?? chat.model}" wrapped (workspace=${describeRoots(deepAgentRoot)}) — main chat now uses DeepAgent`,
+      );
+    }
+    deepAgentWrapped = true;
+  } else {
+    if (chat && (chat as any).__deepAgent) {
+      const orig = (chat as any).__original;
+      config.selectedModelByRole.chat = orig;
+      if (arr) {
+        const i = arr.findIndex((m) => (m as any).__deepAgent);
+        if (i >= 0) arr[i] = orig;
+      }
+      console.log(
+        "[DeepAgent] chat model restored — main chat uses Continue native",
+      );
+    }
+    deepAgentWrapped = false;
+  }
+  updateDeepAgentStatusBar();
+}
+
+export let fullScreenPanel: vscode.WebviewPanel | undefined;
+
+/**
+ * Set inside getCommandsMap (which has the sidebar/extensionContext closure) so
+ * other modules (e.g. VsCodeMessenger) can open the full-screen GUI at a route.
+ */
+export let openFullScreenGUIImpl:
+  | ((page?: string) => Promise<void>)
+  | undefined;
+
+export function getFullScreenTab() {
   const tabs = vscode.window.tabGroups.all.flatMap((tabGroup) => tabGroup.tabs);
   return tabs.find((tab) =>
     (tab.input as any)?.viewType?.endsWith("continue.continueGUIView"),
@@ -128,6 +230,124 @@ const getCommandsMap: (
   core,
   editDecorationManager,
 ) => {
+  // DeepAgent engine mode: wrap the selected chat model on every (re)load so the
+  // main chat is driven by DeepAgent while the model selector stays unchanged.
+  const daConfig = vscode.workspace.getConfiguration("continue");
+  deepAgentEnabled = daConfig.get<boolean>("deepAgentMode", true) ?? false;
+  // Empty / unset = follow VS Code workspace folders automatically.
+  deepAgentRoot = daConfig.get<string>("deepAgentRoot", "") || undefined;
+  deepAgentStatusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100,
+  );
+  deepAgentStatusBar.command = "continue.toggleDeepAgent";
+  extensionContext.subscriptions.push(deepAgentStatusBar);
+  extensionContext.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() =>
+      updateDeepAgentStatusBar(),
+    ),
+  );
+  configHandler.onConfigUpdate((result) => applyDeepAgentWrap(result.config));
+  configHandler
+    .loadConfig()
+    .then((r) => applyDeepAgentWrap(r?.config))
+    .catch(() => {});
+  updateDeepAgentStatusBar();
+
+  /**
+   * Open the Continue GUI as a full editor-area tab (ViewColumn.One), optionally
+   * starting at a specific route (e.g. "/config?tab=permissions"). The route is
+   * injected into the webview HTML as `window.initialRoute` (see
+   * getSidebarContent) and consumed by the GUI's memory router.
+   * Shared by the "continue.openInNewWindow" command and the GUI's
+   * "deepAgent/openFullScreenConfig" webview message.
+   */
+  const openFullScreenGUI = async (page?: string) => {
+    focusGUI();
+
+    // Check if full screen is already open by checking open tabs
+    const fullScreenTab = getFullScreenTab();
+
+    if (fullScreenTab && fullScreenPanel) {
+      // Full screen already open — just navigate it (targeted post bypasses
+      // the shared protocol router) and reveal. No reload → instant.
+      if (page) {
+        fullScreenPanel.webview.postMessage({
+          type: "deepAgent/navigate",
+          page,
+        });
+      }
+      fullScreenPanel.reveal();
+      return;
+    }
+
+    // Create the full screen panel FIRST so it shows up immediately; the
+    // session bookkeeping below runs without blocking its appearance.
+    let panel = vscode.window.createWebviewPanel(
+      "continue.continueGUIView",
+      "Continue",
+      vscode.ViewColumn.One,
+      {
+        retainContextWhenHidden: true,
+        enableScripts: true,
+      },
+    );
+    fullScreenPanel = panel;
+
+    // Add content to the panel
+    panel.webview.html = sidebar.getSidebarContent(
+      extensionContext,
+      panel,
+      page,
+      undefined,
+      true,
+    );
+
+    // When panel closes, reset the webview and allow re-creation next time.
+    panel.onDidDispose(
+      () => {
+        fullScreenPanel = undefined;
+        sidebar.resetWebviewProtocolWebview();
+        vscode.commands.executeCommand("continue.focusContinueInput");
+      },
+      null,
+      extensionContext.subscriptions,
+    );
+
+    // Session bookkeeping (non-blocking for the panel's first paint).
+    const sessionId = await sidebar.webviewProtocol.request(
+      "getCurrentSessionId",
+      undefined,
+    );
+    vscode.commands.executeCommand("continue.newSession");
+
+    const sessionLoader = panel.onDidChangeViewState(() => {
+      vscode.commands.executeCommand("continue.newSession");
+      if (sessionId) {
+        vscode.commands.executeCommand(
+          "continue.focusContinueSessionId",
+          sessionId,
+        );
+      }
+      panel.reveal();
+      sessionLoader.dispose();
+    });
+
+    // Keep the shared protocol pointer on the full-screen panel while it is
+    // the active editor tab, so its requests/responses are routed correctly.
+    // The sidebar takes the pointer back via onDidChangeVisibility.
+    panel.onDidChangeViewState(
+      ({ webviewPanel }) => {
+        if (webviewPanel.active) {
+          sidebar.webviewProtocol.webview = webviewPanel.webview;
+        }
+      },
+      null,
+      extensionContext.subscriptions,
+    );
+  };
+  openFullScreenGUIImpl = openFullScreenGUI;
+
   /**
    * Streams an inline edit to the vertical diff manager.
    *
@@ -170,7 +390,11 @@ const getCommandsMap: (
   }
 
   return {
-    "continue.acceptDiff": async (newFileUri?: string, streamId?: string) => {
+    "continue.acceptDiff": async (
+      newFileUri?: string,
+      streamId?: string,
+      toolCallId?: string,
+    ) => {
       void processDiff(
         "accept",
         sidebar,
@@ -179,10 +403,15 @@ const getCommandsMap: (
         verticalDiffManager,
         newFileUri,
         streamId,
+        toolCallId,
       );
     },
 
-    "continue.rejectDiff": async (newFileUri?: string, streamId?: string) => {
+    "continue.rejectDiff": async (
+      newFileUri?: string,
+      streamId?: string,
+      toolCallId?: string,
+    ) => {
       void processDiff(
         "reject",
         sidebar,
@@ -191,6 +420,7 @@ const getCommandsMap: (
         verticalDiffManager,
         newFileUri,
         streamId,
+        toolCallId,
       );
     },
     "continue.acceptVerticalDiffBlock": (fileUri?: string, index?: number) => {
@@ -377,7 +607,30 @@ const getCommandsMap: (
       sidebar.webviewProtocol?.request("addModel", undefined);
     },
     "continue.newSession": () => {
+      // getSidebarContent re-points the shared protocol (webview + inbound
+      // listener) at the most recently created full-screen panel, so a "+"
+      // click on the SIDEBAR would otherwise deliver newSession into the
+      // full-screen config tab and the new chat would appear there. Re-target
+      // the sidebar before sending.
+      if (sidebar.webview) {
+        sidebar.resetWebviewProtocolWebview();
+      }
       sidebar.webviewProtocol?.request("newSession", undefined);
+    },
+
+    "continue.newSessionFullScreen": () => {
+      // "+" button on the FULL-SCREEN panel's own title bar: route the new
+      // session into the full-screen webview instead of the sidebar.
+      if (fullScreenPanel) {
+        sidebar.webviewProtocol.webview = fullScreenPanel.webview;
+        sidebar.webviewProtocol?.request("newSession", undefined);
+      } else {
+        vscode.commands.executeCommand("continue.newSession");
+      }
+    },
+
+    "continue.toggleChat": () => {
+      toggleGUI();
     },
 
     "continue.shareSession": async (sessionId: string | undefined) => {
@@ -749,70 +1002,7 @@ const getCommandsMap: (
       );
     },
     "continue.openInNewWindow": async () => {
-      focusGUI();
-
-      const sessionId = await sidebar.webviewProtocol.request(
-        "getCurrentSessionId",
-        undefined,
-      );
-      // Check if full screen is already open by checking open tabs
-      const fullScreenTab = getFullScreenTab();
-
-      if (fullScreenTab && fullScreenPanel) {
-        // Full screen open, but not focused - focus it
-        fullScreenPanel.reveal();
-        return;
-      }
-
-      // Clear the sidebar to prevent overwriting changes made in fullscreen
-      vscode.commands.executeCommand("continue.newSession");
-
-      // Full screen not open - open it
-      // Create the full screen panel
-      let panel = vscode.window.createWebviewPanel(
-        "continue.continueGUIView",
-        "Continue",
-        vscode.ViewColumn.One,
-        {
-          retainContextWhenHidden: true,
-          enableScripts: true,
-        },
-      );
-      fullScreenPanel = panel;
-
-      // Add content to the panel
-      panel.webview.html = sidebar.getSidebarContent(
-        extensionContext,
-        panel,
-        undefined,
-        undefined,
-        true,
-      );
-
-      const sessionLoader = panel.onDidChangeViewState(() => {
-        vscode.commands.executeCommand("continue.newSession");
-        if (sessionId) {
-          vscode.commands.executeCommand(
-            "continue.focusContinueSessionId",
-            sessionId,
-          );
-        }
-        panel.reveal();
-        sessionLoader.dispose();
-      });
-
-      // When panel closes, reset the webview and focus
-      panel.onDidDispose(
-        () => {
-          sidebar.resetWebviewProtocolWebview();
-          vscode.commands.executeCommand("continue.focusContinueInput");
-        },
-        null,
-        extensionContext.subscriptions,
-      );
-
-      vscode.commands.executeCommand("workbench.action.copyEditorToNewWindow");
-      vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
+      openFullScreenGUI(undefined);
     },
     "continue.forceNextEdit": async () => {
       // This is basically the same logic as forceAutocomplete.
@@ -823,6 +1013,94 @@ const getCommandsMap: (
       await vscode.commands.executeCommand(
         "editor.action.inlineSuggest.trigger",
       );
+    },
+
+    "continue.deepAgentTest": async () => {
+      const { config } = await configHandler.loadConfig();
+      if (!config) {
+        vscode.window.showErrorMessage("Continue: config not loaded");
+        return;
+      }
+      const llm =
+        config.selectedModelByRole?.chat ?? config.modelsByRole?.chat?.[0];
+      if (!llm) {
+        vscode.window.showErrorMessage("Continue: no chat model selected");
+        return;
+      }
+      const adapter = new ContinueLLMAdapter({ llm });
+
+      const agent = createDeepAgent({
+        model: adapter,
+        systemPrompt:
+          "You are a helpful coding assistant. Use the filesystem tools when needed.",
+        backend: () => createWorkspaceBackend(deepAgentRoot),
+      });
+      const out = vscode.window.createOutputChannel("DeepAgent");
+      out.show();
+      out.appendLine("Running deep agent...");
+      out.appendLine("workspace=" + describeRoots(deepAgentRoot));
+      try {
+        const result = await agent.invoke({
+          messages: [
+            new HumanMessage(
+              "Use the filesystem tools to list the files at the workspace root " +
+                "and read the README (or readme) file if it exists. Then tell me, " +
+                "in 3 short bullet points, what this project is about. Be concise.",
+            ),
+          ],
+        });
+        out.appendLine(JSON.stringify(result, null, 2));
+      } catch (e) {
+        out.appendLine("ERROR: " + (e as Error).stack);
+      }
+    },
+
+    "continue.deepAgentChat": async () => {
+      const { config } = await configHandler.loadConfig();
+      if (!config) {
+        vscode.window.showErrorMessage("Continue: config not loaded");
+        return;
+      }
+      const llm =
+        config.selectedModelByRole?.chat ?? config.modelsByRole?.chat?.[0];
+      if (!llm) {
+        vscode.window.showErrorMessage("Continue: no chat model selected");
+        return;
+      }
+      // No picker: file tools follow the VS Code workspace folders (including
+      // any added with "Add Folder to Workspace…").
+      DeepAgentChatPanel.createOrShow(llm, deepAgentRoot);
+    },
+
+    "continue.toggleDeepAgent": async () => {
+      deepAgentEnabled = !deepAgentEnabled;
+      if (!deepAgentEnabled) deepAgentLastTurnAt = undefined;
+      await setDeepAgentSetting("deepAgentMode", deepAgentEnabled);
+      // Reload so the onConfigUpdate listener re-wraps (or restores) the model.
+      await configHandler.reloadConfig("DeepAgent mode toggled");
+      updateDeepAgentStatusBar();
+      vscode.window.showInformationMessage(
+        `DeepAgent engine mode: ${deepAgentEnabled ? "ON" : "OFF"} (workspace: ${describeRoots(deepAgentRoot)})`,
+      );
+    },
+
+    "continue.setDeepAgentRoot": async () => {
+      const picked = await pickRootOverride(deepAgentRoot);
+      if (!picked) return;
+      deepAgentRoot = picked.override;
+      await setDeepAgentSetting("deepAgentRoot", deepAgentRoot ?? "");
+      await configHandler.reloadConfig("DeepAgent root changed");
+      updateDeepAgentStatusBar();
+      vscode.window.showInformationMessage(
+        `DeepAgent file tools: ${describeRoots(deepAgentRoot)}`,
+      );
+    },
+
+    "continue.deepAgent.openPermissionsPanel": async () => {
+      const { openPermissionsPanel } = await import(
+        "./deepagents/permissionsPanel"
+      );
+      openPermissionsPanel();
     },
   };
 };

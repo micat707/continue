@@ -27,6 +27,17 @@ export interface VerticalDiffHandlerOptions {
 export class VerticalDiffHandler implements vscode.Disposable {
   public insertedInCurrentBlock = 0;
   public streamId?: string;
+  /**
+   * True while this handler is writing its own diff into the document. The
+   * manager's document-change listener must IGNORE changes in this window:
+   * they are already accounted for by the handler's own bookkeeping, and
+   * treating them as user edits double-shifts the decorations. With
+   * concurrent applies (file A's completion re-enables the global listener
+   * while file B is still streaming) this used to corrupt ranges and crash
+   * with "Illegal argument: line must be non-negative", leaving the apply
+   * stuck at "Applying".
+   */
+  public isStreaming = false;
   disposables: vscode.Disposable[] = [];
   private currentLineIndex: number;
   private cancelled = false;
@@ -188,6 +199,7 @@ export class VerticalDiffHandler implements vscode.Disposable {
   async run(diffLineGenerator: AsyncGenerator<DiffLine>) {
     let diffLines = [];
 
+    this.isStreaming = true;
     try {
       // As an indicator of loading
       this.updateIndexLineDecorations();
@@ -227,6 +239,8 @@ export class VerticalDiffHandler implements vscode.Disposable {
     } catch (e) {
       this.clearForFileUri(this.fileUri, false);
       throw e;
+    } finally {
+      this.isStreaming = false;
     }
     return diffLines;
   }

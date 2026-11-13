@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 
 import { threadStopped } from "../debug/debug";
 import { VsCodeExtension } from "../extension/VsCodeExtension";
-import { GitExtension, Repository } from "../otherExtensions/git";
+import type { GitExtension, Repository } from "../otherExtensions/git";
 import {
   SuggestionRanges,
   acceptSuggestionCommand,
@@ -20,6 +20,7 @@ import type { Range, Thread } from "core";
 
 const util = require("node:util");
 const asyncExec = util.promisify(require("node:child_process").exec);
+import * as path from "node:path";
 
 const NO_FS_PROVIDER_ERROR = "ENOPRO";
 const UNSUPPORTED_SCHEMES: Set<string> = new Set();
@@ -639,5 +640,78 @@ export class VsCodeIdeUtils {
       console.error(e);
       return [];
     }
+  }
+
+  /**
+   * List every file changed in the workspace (working tree + index + untracked),
+   * one record per file. Multiple edits to the same file during a session are
+   * already collapsed into a single `repo.state` resource, so the result is the
+   * consolidated "session changes" list. For each file we return the current
+   * on-disk content and the content at git HEAD (empty for untracked files).
+   */
+  async getChangedFiles(): Promise<
+    { filepath: string; originalContent?: string; newContent?: string }[]
+  > {
+    const result: {
+      filepath: string;
+      originalContent?: string;
+      newContent?: string;
+    }[] = [];
+
+    try {
+      const repos = this._getRepositories();
+      if (!repos) {
+        return result;
+      }
+
+      for (const repo of repos) {
+        const root = repo.rootUri.fsPath;
+        const rel = (uri: vscode.Uri) =>
+          path.relative(root, uri.fsPath).replace(/\\/g, "/");
+
+        const readFileContent = async (uri: vscode.Uri): Promise<string> => {
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            return Buffer.from(bytes).toString("utf-8");
+          } catch {
+            return "";
+          }
+        };
+
+        const readHead = async (uri: vscode.Uri): Promise<string> => {
+          try {
+            const { stdout } = await asyncExec(`git show HEAD:${rel(uri)}`, {
+              cwd: root,
+            });
+            return stdout;
+          } catch {
+            return "";
+          }
+        };
+
+        const collect = async (uri: vscode.Uri) => {
+          const newContent = await readFileContent(uri);
+          // `git show HEAD:<path>` fails for untracked / newly-added files, so
+          // originalContent naturally comes back "" for them. This deliberately
+          // avoids consulting the git extension's Status enum: it is a const
+          // enum behind a type-only import, which does not exist at runtime
+          // (the old isNew() check crashed with "ReferenceError: Status is not
+          // defined" whenever the workspace had uncommitted changes).
+          const originalContent = await readHead(uri);
+          result.push({ filepath: uri.fsPath, originalContent, newContent });
+        };
+
+        for (const r of [
+          ...repo.state.workingTreeChanges,
+          ...repo.state.indexChanges,
+        ]) {
+          await collect(r.uri);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    return result;
   }
 }

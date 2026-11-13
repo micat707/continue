@@ -26,8 +26,49 @@ import { showTutorial } from "../util/tutorial";
 import { getExtensionUri } from "../util/vscode";
 import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
+import { resolveHitlDecision, setHitlProtocol } from "../deepagents/hitlBridge";
+import { setExecuteProgressProtocol } from "../deepagents/executeProgressBridge";
+import {
+  activeSessionPermissions,
+  getSessionChangedFiles,
+} from "../deepagents/DeepAgentLLM";
+import {
+  getWorkspaceLayout,
+  showAgentTerminal,
+} from "../deepagents/workspaceBackend";
+import { openFullScreenGUIImpl } from "../commands";
+import {
+  buildPermissionsState,
+  updatePermissionsLayer,
+} from "../deepagents/permissionsPanel";
 
 import { VsCodeExtension } from "./VsCodeExtension";
+
+/**
+ * Map a DeepAgent virtual path (`/Folder/a.txt`, as shown on the outcome cards)
+ * to its real disk path so diff views can open the actual file. Mirrors
+ * DeepAgentChatPanel's resolveRealPath, but without a root override.
+ */
+function resolveAgentRealPath(virtualPath: string): string | undefined {
+  const raw = (virtualPath ?? "").trim().replace(/\\/g, "/");
+  if (!raw.startsWith("/")) return undefined;
+  try {
+    const { mounts, singleRoot } = getWorkspaceLayout();
+    const parts = raw.split("/").filter(Boolean);
+    let mount = mounts[0];
+    let rest = parts;
+    if (!singleRoot) {
+      const found = mounts.find((m) => m.name === parts[0]);
+      if (!found) return undefined;
+      mount = found;
+      rest = parts.slice(1);
+    }
+    if (!mount) return undefined;
+    return vscode.Uri.joinPath(vscode.Uri.file(mount.realPath), ...rest).fsPath;
+  } catch {
+    return undefined;
+  }
+}
 
 type ToIdeOrWebviewFromCoreProtocol = ToIdeFromCoreProtocol &
   ToWebviewFromCoreProtocol;
@@ -82,6 +123,47 @@ export class VsCodeMessenger {
     private readonly context: vscode.ExtensionContext,
     private readonly vsCodeExtension: VsCodeExtension,
   ) {
+    // Wire the webview protocol into the HITL bridge so DeepAgentLLM can ask the
+    // GUI to render approval cards without importing the protocol directly.
+    setHitlProtocol(webviewProtocol);
+
+    // Wire the same protocol into the execute-progress bridge so the DeepAgent
+    // `execute` backend can stream live command output to the GUI's card.
+    setExecuteProgressProtocol(webviewProtocol);
+
+    // DeepAgent human-in-the-loop: the GUI's ReviewChangesCard replies here with
+    // the user's approve/reject decisions, which unblock the paused agent run.
+    this.onWebview(
+      "deepAgentInterruptResponse",
+      async ({ data: { decisions } }) => {
+        resolveHitlDecision(decisions);
+      },
+    );
+
+    // DeepAgent tool-permission settings: the GUI settings section (权限 tab)
+    // reads the three-layer state, persists a layer, or clears session memory.
+    // Each handler returns the refreshed state so the UI re-renders in one trip.
+    this.onWebview("deepAgent/permissions/getState", async () => {
+      return buildPermissionsState();
+    });
+    this.onWebview(
+      "deepAgent/permissions/updateLayer",
+      async ({ data: { layer, config } }) => {
+        return updatePermissionsLayer(layer, config);
+      },
+    );
+    this.onWebview("deepAgent/permissions/clearSession", async () => {
+      activeSessionPermissions.impl?.clear();
+      return buildPermissionsState();
+    });
+
+    // The sidebar webview is too narrow for the config pages — when the user
+    // opens any config route there, bounce it to a full editor-area tab that
+    // boots directly on the requested route (via window.initialRoute).
+    this.onWebview("deepAgent/openFullScreenConfig", async ({ data }) => {
+      await openFullScreenGUIImpl?.(data.page);
+    });
+
     /** WEBVIEW ONLY LISTENERS **/
     this.onWebview("showFile", (msg) => {
       this.ide.openFile(msg.data.filepath);
@@ -112,21 +194,118 @@ export class VsCodeMessenger {
       vscode.commands.executeCommand("continue.openInNewWindow");
     });
 
-    this.onWebview("acceptDiff", async ({ data: { filepath, streamId } }) => {
+    this.onWebview(
+      "acceptDiff",
+      async ({ data: { filepath, streamId, toolCallId } }) => {
+        await vscode.commands.executeCommand(
+          "continue.acceptDiff",
+          filepath,
+          streamId,
+          toolCallId,
+        );
+      },
+    );
+
+    this.onWebview(
+      "rejectDiff",
+      async ({ data: { filepath, streamId, toolCallId } }) => {
+        await vscode.commands.executeCommand(
+          "continue.rejectDiff",
+          filepath,
+          streamId,
+          toolCallId,
+        );
+      },
+    );
+
+    /**
+     * Open the VS Code multi-file "Changes" editor (vscode.changes) so the user
+     * can review every pending file edit at once — Kiro's "View changes" action.
+     * Each file becomes a [resource, original, modified] triple; original/new
+     * contents (from the apply state) are served through Continue's readonly
+     * virtual-document scheme, so the diff is correct even before anything is
+     * written to disk.
+     */
+    this.onWebview("showChanges", async ({ data: { title, files } }) => {
+      const resources = files.map((f) => {
+        const resourceUri = vscode.Uri.file(f.filepath);
+        const originalUri = vscode.Uri.parse(
+          `${VsCodeExtension.continueVirtualDocumentScheme}:${encodeURIComponent(
+            f.filepath,
+          )}?${encodeURIComponent(f.originalContent ?? "")}`,
+        );
+        const modifiedUri = vscode.Uri.parse(
+          `${VsCodeExtension.continueVirtualDocumentScheme}:${encodeURIComponent(
+            f.filepath,
+          )}?${encodeURIComponent(f.newContent ?? "")}`,
+        );
+        return [resourceUri, originalUri, modifiedUri] as [
+          vscode.Uri,
+          vscode.Uri,
+          vscode.Uri,
+        ];
+      });
+      await vscode.commands.executeCommand("vscode.changes", title, resources);
+    });
+
+    /**
+     * Single-file side-by-side diff for an `edit_file` outcome card. The card's
+     * diff covers only the CHANGE WINDOW (context + removed + added lines), so
+     * showing those fragments verbatim yields a tiny "partial file" diff. When
+     * the real file can be resolved on disk we expand the window into a FULL
+     * "before" snapshot (splice the window's original lines back into the
+     * current file where its modified lines occur) and diff it against the REAL
+     * file — proper language mode, line numbers and scrolling. Otherwise fall
+     * back to the fragment pair as readonly virtual documents.
+     */
+    this.onWebview("showEditDiff", async ({ data }) => {
+      const { title, filepath, originalContent, newContent } = data;
+      const scheme = VsCodeExtension.continueVirtualDocumentScheme;
+      const virtualUri = (side: string, content: string) =>
+        vscode.Uri.parse(
+          `${scheme}:${encodeURIComponent(`${filepath}/${side}`)}?${encodeURIComponent(content)}`,
+        );
+
+      let beforeContent = originalContent;
+      let rightUri: vscode.Uri | undefined;
+      try {
+        const real = resolveAgentRealPath(filepath);
+        if (real) {
+          const doc = await vscode.workspace.openTextDocument(
+            vscode.Uri.file(real),
+          );
+          const norm = (s: string) => s.replace(/\r\n/g, "\n");
+          const text = norm(doc.getText());
+          const at = text.indexOf(norm(newContent));
+          if (at >= 0) {
+            beforeContent =
+              text.slice(0, at) +
+              norm(originalContent) +
+              text.slice(at + newContent.length);
+          }
+          rightUri = doc.uri;
+        }
+      } catch {
+        // File may have been deleted — fall back to the fragment pair.
+      }
+
       await vscode.commands.executeCommand(
-        "continue.acceptDiff",
-        filepath,
-        streamId,
+        "vscode.diff",
+        virtualUri("before", beforeContent),
+        rightUri ?? virtualUri("after", newContent),
+        title,
+        { preview: true },
       );
     });
 
-    this.onWebview("rejectDiff", async ({ data: { filepath, streamId } }) => {
-      await vscode.commands.executeCommand(
-        "continue.rejectDiff",
-        filepath,
-        streamId,
-      );
-    });
+    this.onWebview("getChangedFiles", async () => ide.getChangedFiles());
+
+    // Files the current DeepAgent session wrote/edited via write_file/edit_file
+    // (build artifacts from `execute` are excluded). The GUI renders these as a
+    // categorized "session changes" summary after the agent finishes.
+    this.onWebview("getSessionChangedFiles", async () =>
+      getSessionChangedFiles(),
+    );
 
     this.onWebview("applyToFile", async ({ data }) => {
       const [verticalDiffManager, configHandler] = await Promise.all([
@@ -320,14 +499,40 @@ export class VsCodeMessenger {
     this.onWebviewOrCore("writeFile", async (msg) => {
       return ide.writeFile(msg.data.path, msg.data.contents);
     });
+    this.onWebviewOrCore("createDirectory", async (msg) => {
+      return ide.createDirectory(msg.data.path);
+    });
+    this.onWebviewOrCore("removeFile", async (msg) => {
+      return ide.removeFile(msg.data.path);
+    });
     this.onWebviewOrCore("showVirtualFile", async (msg) => {
       return ide.showVirtualFile(msg.data.name, msg.data.content);
     });
     this.onWebviewOrCore("openFile", async (msg) => {
       return ide.openFile(msg.data.path);
     });
+    this.onWebviewOrCore("exportSession", async (msg) => {
+      const { name, content } = msg.data;
+      const workspaceDirs = await this.ide.getWorkspaceDirs();
+      const defaultUri = workspaceDirs[0]
+        ? vscode.Uri.joinPath(vscode.Uri.file(workspaceDirs[0]), name)
+        : vscode.Uri.file(name);
+      const target = await vscode.window.showSaveDialog({
+        defaultUri,
+        filters: { Markdown: ["md"] },
+      });
+      if (!target) {
+        return undefined;
+      }
+      await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+      await vscode.window.showTextDocument(target, { preview: true });
+      return target.fsPath;
+    });
     this.onWebviewOrCore("runCommand", async (msg) => {
       await ide.runCommand(msg.data.command);
+    });
+    this.onWebviewOrCore("showAgentTerminal", async () => {
+      showAgentTerminal();
     });
     this.onWebviewOrCore("getSearchResults", async (msg) => {
       return ide.getSearchResults(msg.data.query, msg.data.maxResults);

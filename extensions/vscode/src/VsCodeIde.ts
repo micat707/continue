@@ -262,6 +262,12 @@ class VsCodeIde implements IDE {
     return await this.ideUtils.getDiff(includeUnstaged);
   }
 
+  async getChangedFiles(): Promise<
+    { filepath: string; originalContent?: string; newContent?: string }[]
+  > {
+    return this.ideUtils.getChangedFiles();
+  }
+
   async getClipboardContent() {
     return {
       text: await vscode.env.clipboard.readText(),
@@ -303,6 +309,10 @@ class VsCodeIde implements IDE {
 
   async removeFile(fileUri: string): Promise<void> {
     await vscode.workspace.fs.delete(vscode.Uri.parse(fileUri));
+  }
+
+  async createDirectory(fileUri: string): Promise<void> {
+    await vscode.workspace.fs.createDirectory(vscode.Uri.parse(fileUri));
   }
 
   async showVirtualFile(title: string, contents: string): Promise<void> {

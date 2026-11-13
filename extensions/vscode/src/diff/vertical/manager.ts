@@ -19,6 +19,11 @@ import { editOutcomeTracker } from "../../extension/EditOutcomeTracker";
 import { VerticalDiffHandler, VerticalDiffHandlerOptions } from "./handler";
 import { getFirstChangedLine } from "./util";
 
+// Max time an apply stream is allowed to run before the watchdog forces a
+// terminal "failed" state. Keep in sync with the GUI-side request timeout in
+// handleApplyStateUpdate.ts (APPLY_TIMEOUT_MS) so the two safety nets agree.
+const STREAM_DIFF_TIMEOUT_MS = 120_000;
+
 export interface VerticalDiffCodeLens {
   start: number;
   numRed: number;
@@ -48,17 +53,29 @@ export class VerticalDiffManager {
     startLine: number,
     endLine: number,
     options: VerticalDiffHandlerOptions,
+    editor?: vscode.TextEditor,
   ): VerticalDiffHandler | undefined {
     if (this.fileUriToHandler.has(fileUri)) {
       this.fileUriToHandler.get(fileUri)?.clear(false);
       this.fileUriToHandler.delete(fileUri);
     }
-    const editor = vscode.window.activeTextEditor;
-    if (editor && URI.equal(editor.document.uri.toString(), fileUri)) {
+    // Prefer the caller-resolved editor for the TARGET file. Relying on
+    // activeTextEditor alone breaks whenever focus is elsewhere (e.g. the
+    // Continue sidebar webview is focused), which made handler creation
+    // return undefined and left the apply state hanging on "streaming"
+    // forever with no terminal updateApplyState.
+    const resolvedEditor =
+      editor && URI.equal(editor.document.uri.toString(), fileUri)
+        ? editor
+        : vscode.window.activeTextEditor;
+    if (
+      resolvedEditor &&
+      URI.equal(resolvedEditor.document.uri.toString(), fileUri)
+    ) {
       const handler = new VerticalDiffHandler(
         startLine,
         endLine,
-        editor,
+        resolvedEditor,
         this.fileUriToCodeLens,
         this.clearForfileUri.bind(this),
         this.refreshCodeLens,
@@ -92,8 +109,27 @@ export class VerticalDiffManager {
         const fileUri = event.document.uri.toString();
         const handler = this.getHandlerForFile(fileUri);
         if (handler) {
+          // Skip changes written by the handler's own streaming apply — they
+          // are already reflected in its bookkeeping. This global listener is
+          // shared by all files, so with concurrent applies file A finishing
+          // re-enables it while file B is still streaming; without this guard
+          // file B's own edits were processed as user edits, double-shifting
+          // decorations and crashing with "Illegal argument: line must be
+          // non-negative" (apply stuck at "Applying").
+          if (handler.isStreaming) {
+            return;
+          }
           // If there is an active diff for that file, handle the document change
-          this.handleDocumentChange(event, handler);
+          try {
+            this.handleDocumentChange(event, handler);
+          } catch (e) {
+            // One malformed change must never kill the event chain — a throw
+            // here used to leave the apply state machine stuck.
+            console.error(
+              "[continue] Failed to track document change for open diff",
+              e,
+            );
+          }
         }
       },
     );
@@ -210,12 +246,27 @@ export class VerticalDiffManager {
     instant: boolean,
     streamId: string,
     toolCallId?: string,
+    targetFileUri?: string,
   ) {
     vscode.commands.executeCommand("setContext", "continue.diffVisible", true);
 
-    // Get the current editor fileUri/range
-    let editor = vscode.window.activeTextEditor;
+    // Resolve the editor for the TARGET file rather than whatever happens to
+    // be active — a focused unrelated file previously made the apply silently
+    // no-op, leaving the GUI's apply state stuck on "streaming".
+    const editor = targetFileUri
+      ? (vscode.window.visibleTextEditors.find((e) =>
+          URI.equal(e.document.uri.toString(), targetFileUri),
+        ) ??
+        (await vscode.window.showTextDocument(
+          await vscode.workspace.openTextDocument(targetFileUri),
+        )))
+      : vscode.window.activeTextEditor;
     if (!editor) {
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+      });
       return;
     }
     const fileUri = editor.document.uri.toString();
@@ -254,6 +305,12 @@ export class VerticalDiffManager {
 
     if (!diffHandler) {
       console.warn("Issue occurred while creating new vertical diff handler");
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath: fileUri,
+      });
       return;
     }
 
@@ -271,6 +328,27 @@ export class VerticalDiffManager {
       true,
     );
 
+    let settled = false;
+    // Watchdog: if the apply neither completes nor throws (e.g. an editor edit
+    // silently stalls), the GUI would hang on "Applying" forever. Force a
+    // terminal state so it can recover.
+    const watchdog = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      console.error(
+        `[continue] Apply stream watchdog tripped (${STREAM_DIFF_TIMEOUT_MS}ms) — marking failed`,
+        streamId,
+      );
+      void this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath: fileUri,
+      });
+      this.disableDocumentChangeListener();
+    }, STREAM_DIFF_TIMEOUT_MS);
+
     try {
       this.logDiffs = await diffHandler.run(diffStream);
 
@@ -279,6 +357,26 @@ export class VerticalDiffManager {
     } catch (e) {
       this.disableDocumentChangeListener();
       const handled = await handleLLMError(e);
+
+      // ALWAYS finalize: a dead stream must reach a terminal state, otherwise
+      // the GUI hangs on "Applying". handleLLMError only decides whether to
+      // surface the error — it must not swallow the failure and leave the
+      // apply state stuck in "streaming" (the previous behavior).
+      console.error(
+        "[continue] Apply stream failed — marking failed",
+        e instanceof Error ? e.message : e,
+      );
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath: fileUri,
+        // Pass the underlying failure to the GUI so it can show the user WHY
+        // (e.g. HTTP 404 / model-not-found from the apply model) instead of a
+        // generic "Edit Failed".
+        error: e instanceof Error ? e.message : String(e),
+      });
+
       if (!handled) {
         let message = "Error streaming diffs";
         if (e instanceof Error) {
@@ -287,6 +385,8 @@ export class VerticalDiffManager {
         throw new Error(message);
       }
     } finally {
+      settled = true;
+      clearTimeout(watchdog);
       vscode.commands.executeCommand(
         "setContext",
         "continue.streamingDiff",
@@ -300,11 +400,25 @@ export class VerticalDiffManager {
     newContent: string,
     streamId: string,
     toolCallId?: string,
+    targetFileUri?: string,
   ) {
     vscode.commands.executeCommand("setContext", "continue.diffVisible", true);
 
-    const editor = vscode.window.activeTextEditor;
+    // Resolve the editor for the TARGET file (see streamDiffLines note).
+    const editor = targetFileUri
+      ? (vscode.window.visibleTextEditors.find((e) =>
+          URI.equal(e.document.uri.toString(), targetFileUri),
+        ) ??
+        (await vscode.window.showTextDocument(
+          await vscode.workspace.openTextDocument(targetFileUri),
+        )))
+      : vscode.window.activeTextEditor;
     if (!editor) {
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+      });
       return;
     }
 
@@ -329,14 +443,30 @@ export class VerticalDiffManager {
           }),
         streamId,
       },
+      editor,
     );
 
     if (!diffHandler) {
-      console.warn("Issue occurred while creating vertical diff handler");
+      console.warn(
+        `[continue] instantApplyDiff — failed to create diff handler for ${fileUri}`,
+      );
+      // ALWAYS finalize: without a terminal state the GUI apply status stays
+      // on "streaming" forever and the agent turn hangs with no feedback.
+      await this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath: fileUri,
+        error: "Failed to create diff handler for the target editor",
+      });
       return;
     }
+    console.log(`[continue] instantApplyDiff — applying diff to ${fileUri}`);
 
     await diffHandler.reapplyWithMyersDiff(myersDiffs);
+    console.log(
+      `[continue] instantApplyDiff — diffs written (${myersDiffs.length} hunks)`,
+    );
 
     const scrollToLine = getFirstChangedLine(myersDiffs, 0) ?? 0;
     const range = new vscode.Range(scrollToLine, 0, scrollToLine, 0);
@@ -352,6 +482,9 @@ export class VerticalDiffManager {
       filepath: fileUri,
       toolCallId,
     });
+    console.log(
+      `[continue] instantApplyDiff — done state acked by webview (${fileUri})`,
+    );
   }
 
   async streamEdit({
@@ -527,6 +660,27 @@ export class VerticalDiffManager {
     const abortManager = ApplyAbortManager.getInstance();
     const abortController = abortManager.get(fileUri);
 
+    let settled = false;
+    // Watchdog: if the edit neither completes nor throws (e.g. the LLM stream
+    // silently stalls), the GUI would hang on "Applying" forever. Same safety
+    // net as streamDiffLines.
+    const watchdog = setTimeout(() => {
+      if (settled || !streamId) {
+        return;
+      }
+      console.error(
+        `[continue] Edit stream watchdog tripped (${STREAM_DIFF_TIMEOUT_MS}ms) — marking failed`,
+        streamId,
+      );
+      void this.webviewProtocol.request("updateApplyState", {
+        streamId,
+        status: "failed",
+        toolCallId,
+        filepath: fileUri,
+      });
+      this.disableDocumentChangeListener();
+    }, STREAM_DIFF_TIMEOUT_MS);
+
     try {
       const streamedLines: string[] = [];
 
@@ -578,6 +732,25 @@ export class VerticalDiffManager {
     } catch (e) {
       this.disableDocumentChangeListener();
       const handled = await handleLLMError(e);
+
+      // ALWAYS finalize: a dead stream must reach a terminal state, otherwise
+      // the GUI hangs on "Applying" forever. handleLLMError only decides
+      // whether to surface the error — it must not swallow the failure and
+      // leave the apply state stuck in "streaming" (the previous behavior).
+      // Same safety net as streamDiffLines.
+      console.error(
+        "[continue] Edit stream failed — marking failed",
+        e instanceof Error ? e.message : e,
+      );
+      if (streamId) {
+        await this.webviewProtocol.request("updateApplyState", {
+          streamId,
+          status: "failed",
+          toolCallId,
+          filepath: fileUri,
+        });
+      }
+
       if (!handled) {
         let message = "Error streaming edit diffs";
         if (e instanceof Error) {
@@ -586,6 +759,8 @@ export class VerticalDiffManager {
         throw new Error(message);
       }
     } finally {
+      settled = true;
+      clearTimeout(watchdog);
       void vscode.commands.executeCommand(
         "setContext",
         "continue.streamingDiff",

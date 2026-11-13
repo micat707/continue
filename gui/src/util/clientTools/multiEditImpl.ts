@@ -2,6 +2,7 @@ import { validateMultiEdit } from "core/edit/searchAndReplace/multiEditValidatio
 import { executeMultiFindAndReplace } from "core/edit/searchAndReplace/performReplace";
 import { validateSearchAndReplaceFilepath } from "core/edit/searchAndReplace/validateArgs";
 import { v4 as uuid } from "uuid";
+import { assertFileWasRead } from "./assertFileWasRead";
 import { applyForEditTool } from "../../redux/thunks/handleApplyStateUpdate";
 import { ClientToolImpl } from "./callClientTool";
 
@@ -17,6 +18,9 @@ export const multiEditImpl: ClientToolImpl = async (
     args.filepath,
     extras.ideMessenger.ide,
   );
+
+  // Kiro rule: the model must have read this file before editing it.
+  assertFileWasRead(fileUri, extras);
 
   const editingFileContents = await extras.ideMessenger.ide.readFile(fileUri);
   const newFileContents = executeMultiFindAndReplace(

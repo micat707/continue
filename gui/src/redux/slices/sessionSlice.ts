@@ -198,6 +198,8 @@ export function handleStreamingToolCallUpdates(
 // The proper fix is adding a UUID to all chat messages, but this is the temp workaround.
 export type ChatHistoryItemWithMessageId = ChatHistoryItem & {
   message: ChatMessage & { id: string };
+  /** Wall-clock duration of the turn that produced this item, in ms. */
+  turnElapsedMs?: number;
 };
 
 type SessionState = {
@@ -206,6 +208,17 @@ type SessionState = {
   allSessionMetadata: BaseSessionMetadata[];
   history: ChatHistoryItemWithMessageId[];
   isStreaming: boolean;
+  /**
+   * True while an asynchronous follow-up (e.g. the edit/apply stream) owns the
+   * turn's continuation but has not yet dispatched it. The streamThunkWrapper
+   * `finally` block must NOT end the turn (dispatch setInactive) while this is
+   * set — otherwise the pending continuation is aborted mid-flight
+   * ("aborted by session state"). Cleared the moment the continuation is
+   * dispatched (see streamResponseAfterToolCall).
+   */
+  pendingContinuation: boolean;
+  /** Start timestamp of the current turn, used for the footer elapsed time. */
+  turnStartedAt?: number;
   title: string;
   id: string;
   streamAborter: AbortController;
@@ -230,6 +243,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   allSessionMetadata: [],
   history: [],
   isStreaming: false,
+  pendingContinuation: false,
   title: NEW_SESSION_TITLE,
   id: uuidv4(),
   streamAborter: new AbortController(),
@@ -271,6 +285,12 @@ export const sessionSlice = createSlice({
     },
     setActive: (state) => {
       state.isStreaming = true;
+      if (state.turnStartedAt == null) {
+        state.turnStartedAt = Date.now();
+      }
+    },
+    setPendingContinuation: (state, action: PayloadAction<boolean>) => {
+      state.pendingContinuation = action.payload;
     },
     setIsGatheringContext: (state, { payload }: PayloadAction<boolean>) => {
       const curMessage = state.history.at(-1);
@@ -364,6 +384,9 @@ export const sessionSlice = createSlice({
       }>,
     ) => {
       const { index, editorState } = payload;
+
+      // A new user message starts a new turn.
+      state.turnStartedAt = undefined;
 
       if (state.history.length && index < state.history.length) {
         // Resubmission - update input message, truncate history after resubmit with new empty response message
@@ -515,6 +538,18 @@ export const sessionSlice = createSlice({
         curMessage.isGatheringContext = false;
       }
 
+      // Record the wall-clock duration of this turn on its final assistant
+      // item, so the message footer can show "Elapsed time" and it persists
+      // with the saved session.
+      if (state.turnStartedAt != null) {
+        const lastAssistant = [...state.history]
+          .reverse()
+          .find((item) => item.message.role === "assistant");
+        if (lastAssistant) {
+          lastAssistant.turnElapsedMs = Date.now() - state.turnStartedAt;
+        }
+      }
+
       state.isStreaming = false;
     },
     abortStream: (state) => {
@@ -642,7 +677,13 @@ export const sessionSlice = createSlice({
             if (lastMessage.role === "thinking") {
               lastMessage.signature = message.signature;
             }
-          } else if (
+          }
+          // Tool call handling is intentionally independent of the content
+          // branch above: some providers send a single streaming chunk with
+          // BOTH text and tool calls. Gating this behind `else if
+          // (messageContent)` silently dropped tool calls on such chunks
+          // (provider reported finish_reason "tool_calls", GUI saw none).
+          if (
             message.role === "assistant" &&
             message.toolCalls?.length &&
             lastMessage.role === "assistant"
@@ -684,6 +725,10 @@ export const sessionSlice = createSlice({
       }
     },
     newSession: (state, { payload }: PayloadAction<Session | undefined>) => {
+      // Temporary diagnostics: trace WHO dispatched the session reset, so we
+      // can pin down reports of "sending clears the current conversation".
+      // Remove once the culprit is confirmed.
+      console.trace("[continue] newSession dispatched");
       state.lastSessionId = state.id;
 
       state.streamAborter.abort();
@@ -695,6 +740,7 @@ export const sessionSlice = createSlice({
       state.inlineErrorMessage = undefined;
       state.isPruned = false;
       state.contextPercentage = undefined;
+      state.turnStartedAt = undefined;
 
       if (payload) {
         state.history = payload.history as any;
@@ -810,9 +856,19 @@ export const sessionSlice = createSlice({
       );
 
       if (!applyState) {
-        state.codeBlockApplyStates.states.push(payload);
+        // Tag the apply state with the session it was created in, so pending
+        // accept/reject cards only surface in their owning session.
+        state.codeBlockApplyStates.states.push({
+          ...payload,
+          sessionId: state.id,
+        });
       } else {
         applyState.status = payload.status ?? applyState.status;
+        // Persist the owning tool call id: the "streaming" update carries no
+        // toolCallId, and dropping the id from later updates (done/closed)
+        // broke both the closed-event recovery in handleApplyStateUpdate and
+        // the per-tool policy filter for confirmation cards.
+        applyState.toolCallId = payload.toolCallId ?? applyState.toolCallId;
         applyState.numDiffs = payload.numDiffs ?? applyState.numDiffs;
         applyState.filepath = payload.filepath ?? applyState.filepath;
         applyState.fileContent = payload.fileContent ?? applyState.fileContent;
@@ -1090,6 +1146,7 @@ export const {
   setIsPruned,
   setContextPercentage,
   setCompactionLoading,
+  setPendingContinuation,
 } = sessionSlice.actions;
 
 export const { selectIsGatheringContext } = sessionSlice.selectors;

@@ -1041,3 +1041,34 @@ body[data-color-mode*="light"] {
 .mermaid foreignObject {
   width: 100%;
 }
+
+/* ---- Continue streaming "typing" caret ---- */
+/* Mirrors Kiro's kiro-streaming-text + blinking cursor: while the assistant
+   message is still streaming, show a blinking text caret at the very end of the
+   last rendered block so the message reads as being typed out. */
+.continue-streaming > *:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.1em;
+  margin-left: 2px;
+  transform: translateY(2px);
+  background-color: var(--vscode-editorCursor-foreground, currentColor);
+  animation: continue-caret-blink 1.06s steps(1, start) infinite;
+}
+
+/* But NOT under a tool outcome card: while a command/edit/read is executing,
+   the outcome card is the last block and already shows its own running
+   spinner — the dangling caret on an empty line below it just looks like a
+   rendering glitch. The card renders inside the <pre> wrapper, hence :has(). */
+.continue-streaming > *:last-child:has(.agent-outcome)::after,
+.continue-streaming > .agent-outcome:last-child::after,
+.continue-streaming > p:last-child:empty::after {
+  display: none;
+}
+
+@keyframes continue-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}

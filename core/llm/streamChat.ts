@@ -112,6 +112,15 @@ export async function* llmStreamChat(
 
       return next.value;
     } else {
+      // Diagnostics for a turn that "hangs": proves whether the HTTP request
+      // was actually fired, whether the model ever produced a chunk, and
+      // whether the stream was aborted. Visible in the Extension Host log
+      // (Help → Toggle Developer Tools → Console / Output "Extension Host").
+      console.log(
+        "[continue][core] → model.streamChat",
+        model.title ?? model.model,
+        `messages=${messages.length}`,
+      );
       const gen = model.streamChat(
         messages,
         abortController.signal,
@@ -119,8 +128,13 @@ export async function* llmStreamChat(
         messageOptions,
       );
       let next = await gen.next();
+      console.log(
+        "[continue][core] ← model.streamChat first chunk",
+        next.done ? "(done, no chunks)" : "",
+      );
       while (!next.done) {
         if (abortController.signal.aborted) {
+          console.log("[continue][core] ✕ model.streamChat aborted");
           next = await gen.return(errorPromptLog);
           break;
         }

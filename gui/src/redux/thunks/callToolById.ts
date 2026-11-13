@@ -8,7 +8,7 @@ import { selectSelectedChatModel } from "../slices/configSlice";
 import {
   acceptToolCall,
   errorToolCall,
-  setInactive,
+  setPendingContinuation,
   setToolCallCalling,
   updateToolCallOutput,
 } from "../slices/sessionSlice";
@@ -44,6 +44,13 @@ export const callToolById = createAsyncThunk<
     setToolCallCalling({
       toolCallId,
     }),
+  );
+
+  const toolName = toolCallState.toolCall.function.name;
+  console.log(
+    `[tool-call] START tool=${toolName} toolCallId=${toolCallId} args=${JSON.stringify(
+      toolCallState.parsedArgs ?? {},
+    ).slice(0, 200)}`,
   );
 
   let output: ContextItem[] | undefined = undefined;
@@ -93,6 +100,14 @@ export const callToolById = createAsyncThunk<
     }
     streamResponse = true;
   }
+
+  console.log(
+    `[tool-call] END tool=${toolName} toolCallId=${toolCallId} result=${
+      error
+        ? `ERROR: ${error.message}`
+        : `OK (${output?.length ?? 0} context items)`
+    }`,
+  );
 
   if (error) {
     dispatch(
@@ -145,6 +160,17 @@ export const callToolById = createAsyncThunk<
     );
     unwrapResult(wrapped);
   } else {
-    dispatch(setInactive());
+    // `streamResponse === false` (respondImmediately: false) means an async
+    // follow-up — the edit/apply stream — owns the turn's continuation. The
+    // apply completion dispatches streamResponseAfterToolCall, which re-activates
+    // the session and continues the conversation. Ending the turn here would
+    // mark the session inactive mid-apply, and the streamThunkWrapper `finally`
+    // would then dispatch setInactive and abort the pending continuation
+    // ("aborted by session state"). Instead flag the pending continuation so the
+    // safety-net cleanup skips this turn until the apply dispatches it.
+    // (Every current respondImmediately:false client tool is an edit tool that
+    // always dispatches an apply, so the turn is guaranteed to be continued —
+    // or failed-and-continued — by the apply flow.)
+    dispatch(setPendingContinuation(true));
   }
 });
