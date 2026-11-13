@@ -94,6 +94,10 @@ const MAX_MODEL_RETRIES = 1;
 export class ContinueLLMAdapter extends BaseChatModel {
   llm: ILLM;
 
+  /** Stable id for THIS chat session (one per DeepAgent panel instance). Written
+   *  into every llm.log header so the viewer can group entries by conversation. */
+  private readonly sessionId: string = randomUUID();
+
   private readonly systemContext?: () => string;
 
   /** Lazy OutputChannel for raw request/response debugging. */
@@ -131,7 +135,12 @@ export class ContinueLLMAdapter extends BaseChatModel {
    */
   private logApiJson(section: string, obj: unknown): void {
     try {
-      logLlmIo(section, JSON.stringify(obj, null, 2));
+      logLlmIo(
+        section,
+        JSON.stringify(obj, null, 2),
+        undefined,
+        this.sessionId,
+      );
     } catch {
       /* logging must never break a model call */
     }
@@ -685,26 +694,28 @@ export class ContinueLLMAdapter extends BaseChatModel {
 
     // ---- Debug: dump what we send to the model ----
     const systemMsg = continueMessages.find((m) => m.role === "system");
-    ContinueLLMAdapter.logDebug(
-      "================= DeepAgent request =================",
-      "model:",
-      this.llm.model,
-      "systemPrompt:",
-      systemMsg ? JSON.stringify(systemMsg.content).slice(0, 4000) : "(none)",
-      "TOOLS sent to model (name + parameters):",
-      JSON.stringify(
-        (completionOptions.tools ?? []).map((t) => ({
-          name: t.function.name,
-          parameters: t.function.parameters,
-        })),
-        null,
-        2,
-      ),
-      "numMessages:",
-      continueMessages.length,
-      "maxTokens:",
-      completionOptions.maxTokens,
-    );
+    "sessionId:",
+      this.sessionId,
+      ContinueLLMAdapter.logDebug(
+        "================= DeepAgent request =================",
+        "model:",
+        this.llm.model,
+        "systemPrompt:",
+        systemMsg ? JSON.stringify(systemMsg.content).slice(0, 4000) : "(none)",
+        "TOOLS sent to model (name + parameters):",
+        JSON.stringify(
+          (completionOptions.tools ?? []).map((t) => ({
+            name: t.function.name,
+            parameters: t.function.parameters,
+          })),
+          null,
+          2,
+        ),
+        "numMessages:",
+        continueMessages.length,
+        "maxTokens:",
+        completionOptions.maxTokens,
+      );
 
     // Retry loop: a stalled stream (no data for MODEL_STREAM_STALL_MS ⇒ local
     // abort ⇒ throw) or an empty/degenerate response is auto-retried up to
