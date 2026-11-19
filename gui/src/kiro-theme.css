@@ -1083,6 +1083,15 @@
 .kiro-lump-slot--reserved {
   /* Actual value is set inline by LumpSlot.tsx (measured content height). */
 }
+/* The in-flow streaming bar and the floating approval card must never both be
+   visible. Normally Chat.tsx hides the bar via hasPendingConfirmation, but a
+   DeepAgent HITL approval (deepAgentInterrupt) does not produce a toolCallState,
+   so that JS condition misses it and the bar's bottom edge peeks out from under
+   the card. Enforce "bar XOR card" here as well: when a floating review card is
+   present, hide the bar so the card sits flush above the input frame. */
+.kiro-lump-slot:has(.agent-interaction-panel) .kiro-stream-bar {
+  display: none;
+}
 
 /* ---- Kiro input focus border ----
    Mirrors Kiro's own chat input: a 1px border that transitions from
