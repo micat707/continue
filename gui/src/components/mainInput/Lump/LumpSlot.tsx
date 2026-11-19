@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import { useAppSelector } from "../../../redux/hooks";
 import {
   selectApplyStatesForCurrentSession,
@@ -87,7 +88,7 @@ export function LumpSlot({ children }: { children: ReactNode }) {
 
   return (
     <div
-      className={`kiro-lump-slot${busy ? "kiro-lump-slot--reserved" : ""}`}
+      className={clsx("kiro-lump-slot", busy && "kiro-lump-slot--reserved")}
       style={{ minHeight: busy ? reserved : undefined }}
     >
       <div ref={contentRef}>{children}</div>
