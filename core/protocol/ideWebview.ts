@@ -201,6 +201,10 @@ export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
       /** Unique id for this pending approval; echoed back by the GUI so the
        * IDE can resolve the exact waiting request even across sessions. */
       requestId: string;
+      /** The chat session that owns this interrupt. Used by the GUI to show the
+       * approval card only in its originating session, not whichever chat is
+       * currently displayed when the message arrives. */
+      chatSessionId?: string;
       request: {
         actionRequests?: Array<{
           name?: string;

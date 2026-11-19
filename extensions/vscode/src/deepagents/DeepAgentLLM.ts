@@ -385,6 +385,11 @@ export function wrapWithDeepAgent(
     _options: CompletionOptions,
     _messageOptions?: any,
   ): AsyncGenerator<ChatMessage> {
+    // The owning chat session id is threaded in from the GUI via messageOptions.
+    // Captured per-call (not read from any module-global) so an approval is
+    // always attributed to the session that started this stream, even if the
+    // user switches chats while the interrupt is in flight.
+    const chatSessionId: string | undefined = _messageOptions?.chatSessionId;
     // Hard evidence in the Extension Host log that THIS chat turn went through
     // the DeepAgent wrapper (Help → Toggle Developer Tools → Console, or
     // Output → "Extension Host").
@@ -645,7 +650,11 @@ export function wrapWithDeepAgent(
               }
             }
           }
-          const decisions = await requestHitlDecision(payload, _signal);
+          const decisions = await requestHitlDecision(
+            payload,
+            _signal,
+            chatSessionId,
+          );
           // Fold the user's decision into this session's permission memory so
           // the interrupt does not re-fire for the same path this chat:
           //  - approve a READ tool → read-only grant for the subtree (writes

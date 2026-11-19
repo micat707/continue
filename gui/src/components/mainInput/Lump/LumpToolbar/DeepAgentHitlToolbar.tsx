@@ -88,7 +88,13 @@ export function useDeepAgentHitl() {
       return;
     }
     const actions = (req?.actionRequests ?? []) as PendingAction[];
-    const ownerSessionId = currentSessionIdRef.current;
+    // Prefer the session id stamped at the source (DeepAgentLLM) and carried by
+    // the protocol. Only fall back to the currently displayed session when an
+    // older IDE build omits it — reading `currentSessionIdRef` here was the
+    // root cause of approval cards appearing in the wrong chat: the interrupt
+    // can arrive after the user has already switched tabs.
+    const ownerSessionId: string | undefined =
+      payload?.chatSessionId ?? currentSessionIdRef.current;
 
     const items = actions.map((a, i): ReviewChangeItem => {
       // Command approval: the human must see the FULL command before

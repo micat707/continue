@@ -85,12 +85,16 @@ export const streamNormalInput = createAsyncThunk<
   {
     legacySlashCommandData?: ToCoreProtocol["llm/streamChat"][0]["legacySlashCommandData"];
     depth?: number;
+    /** Owning chat session id. Captured once at the stream entry point and
+     * threaded explicitly through every async step, so a background stream can
+     * never be mistaken for whichever chat happens to be on screen. */
+    sessionId?: string;
   },
   ThunkApiType
 >(
   "chat/streamNormalInput",
   async (
-    { legacySlashCommandData, depth = 0 },
+    { legacySlashCommandData, depth = 0, sessionId },
     { dispatch, extra, getState },
   ) => {
     if (process.env.NODE_ENV === "test" && depth > 50) {
@@ -99,6 +103,9 @@ export const streamNormalInput = createAsyncThunk<
       throw new Error(message);
     }
     const state = getState();
+    // Closure-captured owning session. All downstream async work must use this
+    // value, never a fresh getState().session.id (which changes on tab switch).
+    const owningSessionId = sessionId ?? state.session.id;
     const selectedChatModel = selectSelectedChatModel(state);
 
     if (!selectedChatModel) {
@@ -286,7 +293,10 @@ export const streamNormalInput = createAsyncThunk<
           title: selectedChatModel.title,
           messages: compiledChatMessages,
           legacySlashCommandData,
-          messageOptions: { precompiled: true },
+          messageOptions: {
+            precompiled: true,
+            chatSessionId: owningSessionId,
+          },
         },
         streamAborter.signal,
       );
@@ -362,35 +372,19 @@ export const streamNormalInput = createAsyncThunk<
         next.done ? "(empty / done)" : "",
       );
       while (!next.done) {
-        if (!getState().session.isStreaming) {
-          if (streamAborter.signal.aborted) {
-            // A genuine cancellation (user pressed Stop, or a turn-cleanup
-            // requested the abort). Expected — no need to alarm the user.
-            console.log(
-              `[continue] ✕ LLM stream #${requestId} aborted (signal aborted)`,
-            );
-          } else {
-            // Spurious abort: the session was marked inactive mid-stream
-            // WITHOUT a cancel request (e.g. a turn-cleanup `setInactive`
-            // fired while this continuation was still generating). Left
-            // silent, the user just sees the chat die with no explanation —
-            // surface it so the interruption is visible, and so we stop
-            // silently swallowing the underlying bug.
-            console.log(
-              `[continue] ✕ LLM stream #${requestId} aborted by session state (spurious — no abort requested)`,
-            );
-            dispatch(
-              setDialogMessage(
-                React.createElement(StreamErrorDialog, {
-                  error: new Error(
-                    "The assistant response was interrupted unexpectedly (the session ended mid-stream without a cancel request). The conversation may be incomplete — re-run your request to continue.",
-                  ),
-                }),
-              ),
-            );
-            dispatch(setShowDialog(true));
-          }
-          dispatch(abortStream());
+        // Liveness is owned by THIS stream's AbortController, not by the global
+        // `state.session.isStreaming` flag. Reading the global flag made a turn
+        // in another chat (or a tab switch's newSession) look like an
+        // unexpected interruption of this stream — producing the spurious
+        // "response was interrupted" dialog and, worse, letting this stream
+        // keep writing chunks into whichever session happened to be visible.
+        // A switch-away aborts the controller captured at entry (same object),
+        // so this check stops the background turn cleanly before any chunk is
+        // dispatched.
+        if (streamAborter.signal.aborted) {
+          console.log(
+            `[continue] ✕ LLM stream #${requestId} aborted (signal aborted)`,
+          );
           break;
         }
 
@@ -525,7 +519,7 @@ export const streamNormalInput = createAsyncThunk<
     // Tool call sequence:
     // 1. Mark generating tool calls as generated
     const state1 = getState();
-    if (streamAborter.signal.aborted || !state1.session.isStreaming) {
+    if (streamAborter.signal.aborted) {
       return;
     }
     const originalToolCalls = selectCurrentToolCalls(state1);
@@ -543,7 +537,7 @@ export const streamNormalInput = createAsyncThunk<
 
     // 2. Pre-process args to catch invalid args before checking policies
     const state2 = getState();
-    if (streamAborter.signal.aborted || !state2.session.isStreaming) {
+    if (streamAborter.signal.aborted) {
       return;
     }
     const generatedCalls2 = selectPendingToolCalls(state2);
@@ -551,7 +545,7 @@ export const streamNormalInput = createAsyncThunk<
 
     // 3. Security check: evaluate updated policies based on args
     const state3 = getState();
-    if (streamAborter.signal.aborted || !state3.session.isStreaming) {
+    if (streamAborter.signal.aborted) {
       return;
     }
     const generatedCalls3 = selectPendingToolCalls(state3);
@@ -589,8 +583,7 @@ export const streamNormalInput = createAsyncThunk<
       );
 
       if (builtInReadonlyAutoApproved.length > 0) {
-        const state4 = getState();
-        if (streamAborter.signal.aborted || !state4.session.isStreaming) {
+        if (streamAborter.signal.aborted) {
           return;
         }
         await Promise.all(
@@ -613,7 +606,7 @@ export const streamNormalInput = createAsyncThunk<
       // auto stream cases increase thunk depth by 1 for debugging
       const state4 = getState();
       const generatedCalls4 = selectPendingToolCalls(state4);
-      if (streamAborter.signal.aborted || !state4.session.isStreaming) {
+      if (streamAborter.signal.aborted) {
         return;
       }
       if (generatedCalls4.length > 0) {

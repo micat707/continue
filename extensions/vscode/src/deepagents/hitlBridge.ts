@@ -50,6 +50,7 @@ export function setHitlProtocol(p: VsCodeWebviewProtocol): void {
 export function requestHitlDecision(
   payload: unknown,
   signal?: AbortSignal,
+  chatSessionId?: string,
 ): Promise<HitlDecision[]> {
   const requestId = randomUUID();
   const promise = new Promise<HitlDecision[]>((resolve, reject) => {
@@ -75,7 +76,11 @@ export function requestHitlDecision(
   // (deepAgentInterruptResponse). A send failure rejects this request; its
   // AbortSignal (if provided) also clears it on Stop.
   void protocol
-    ?.request("deepAgentInterrupt", { requestId, request: payload })
+    ?.request("deepAgentInterrupt", {
+      requestId,
+      chatSessionId,
+      request: payload,
+    })
     .catch((e) => {
       const p = pending.get(requestId);
       pending.delete(requestId);
