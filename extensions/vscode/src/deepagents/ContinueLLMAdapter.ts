@@ -54,6 +54,37 @@ import type {
 } from "core";
 
 import { logLlmIo } from "./workspaceBackend";
+import { registerRawApiLogger } from "core/llm/llms/rawApiLogger";
+
+/**
+ * Kiro gives each built-in tool TWO names: an internal `id` (what its agent
+ * dispatches on) and a `displayName` (what the model sees). The vendored
+ * descriptions are verbatim Kiro text and refer to tools by displayName
+ * ("use glob tool", "use read tool", ...), so the model must be shown the
+ * displayName for the description and the tool name to agree. Our whole agent
+ * (langgraph dispatch, HITL, GUI cards) runs on the internal ids, so we map
+ * id -> displayName only when sending tools to the model and displayName -> id
+ * only when its tool calls come back. The mapping is from Kiro's own bundle
+ * (`extension_inuse.js`), where e.g. `{ id: "file_search", displayName: "glob" }`.
+ */
+const TOOL_ID_TO_DISPLAY: Record<string, string> = {
+  file_search: "glob",
+  grep_search: "grep",
+  read_file: "read",
+  fs_write: "write",
+  str_replace: "edit",
+  execute_pwsh: "bash",
+};
+const TOOL_DISPLAY_TO_ID: Record<string, string> = Object.fromEntries(
+  Object.entries(TOOL_ID_TO_DISPLAY).map(([id, display]) => [display, id]),
+);
+
+// The raw wire-level (provider-format) request/response logger lives in core,
+// but the on-disk writer (`logLlmIo`) is extension-only. We bridge them here:
+// the most recently created adapter's sessionId tags each raw entry so the
+// viewer can group them with the corresponding REQUEST/RESPONSE dumps.
+let rawApiLoggerRegistered = false;
+let currentSessionId = "";
 
 export interface ContinueLLMAdapterOptions {
   /** The Continue LLM instance that actually talks to the model. */
@@ -119,6 +150,13 @@ export class ContinueLLMAdapter extends BaseChatModel {
     super({});
     this.llm = fields.llm;
     this.systemContext = fields.systemContext;
+    currentSessionId = this.sessionId;
+    if (!rawApiLoggerRegistered) {
+      rawApiLoggerRegistered = true;
+      registerRawApiLogger((section, body) =>
+        logLlmIo(section, body, undefined, currentSessionId),
+      );
+    }
   }
 
   _llmType(): string {
@@ -189,7 +227,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
         out.push({
           type: "function",
           function: {
-            name: c.function.name,
+            name: TOOL_ID_TO_DISPLAY[c.function.name] ?? c.function.name,
             description: c.function.description,
             parameters: c.function.parameters ?? {
               type: "object",
@@ -214,7 +252,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
       out.push({
         type: "function",
         function: {
-          name: c.name,
+          name: TOOL_ID_TO_DISPLAY[c.name] ?? c.name,
           description: c.description,
           parameters: parameters as Record<string, unknown>,
         },
@@ -549,7 +587,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
    * losses loudly instead.
    */
   private sanitizeToolCalls(toolCalls: ToolCallDelta[]): ToolCallDelta[] {
-    return toolCalls.filter((tc) => {
+    const kept = toolCalls.filter((tc) => {
       const name = tc.function?.name;
       const args = (tc.function?.arguments ?? "").trim();
       // Pure noise: no name AND no arguments — drop silently.
@@ -565,6 +603,14 @@ export class ContinueLLMAdapter extends BaseChatModel {
       }
       return true;
     });
+    // The model called tools by their Kiro displayName (glob/grep/read/...);
+    // translate back to the internal ids the agent dispatches on. This is the
+    // exact inverse of the mapping applied in toContinueTools().
+    for (const tc of kept) {
+      const fn = tc.function;
+      if (fn?.name) fn.name = TOOL_DISPLAY_TO_ID[fn.name] ?? fn.name;
+    }
+    return kept;
   }
 
   /**
@@ -738,6 +784,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
       // gap / Qwen deep-think quirk), not a true empty response.
       let reasoningChars = 0;
       let reasoningSample = "";
+      let reasoning = ""; // full (untruncated) thinking text, surfaced in llm.log
       let rawChunkCount = 0;
       try {
         for await (const chunk of gen) {
@@ -748,6 +795,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
             const thinking =
               typeof chunk.content === "string" ? chunk.content : "";
             reasoningChars += thinking.length;
+            reasoning += thinking;
             if (reasoningSample.length < 1500) {
               reasoningSample += thinking.slice(
                 0,
@@ -765,12 +813,18 @@ export class ContinueLLMAdapter extends BaseChatModel {
           }
         }
 
+        // rawResponse = model text BEFORE finalizeResponse strips text-format
+        // tool-call markers — the literal response stream, kept as an unprocessed
+        // copy for agent tuning (the `content` field below is the cleaned one).
+        const rawResponse = content;
         const finalized = this.finalizeResponse(content, mergedCalls, lcTools);
         content = finalized.content;
 
         // ---- Debug: dump the exact JSON response returned by the model ----
         this.logApiJson("RESPONSE-FROM-MODEL", {
           content,
+          rawResponse,
+          reasoning,
           toolCalls: finalized.toolCalls,
           finishReason,
         });
@@ -823,8 +877,23 @@ export class ContinueLLMAdapter extends BaseChatModel {
             path: "generate",
             note: "aborted-by-user",
           });
+          this.logApiJson("ERROR-FROM-MODEL", {
+            reason: "aborted-by-user",
+            attempt: attempt + 1,
+            partialContent: content,
+            partialReasoning: reasoning,
+            rawChunkCount,
+          });
           break;
         }
+        this.logApiJson("ERROR-FROM-MODEL", {
+          reason: "generate-failed",
+          attempt: attempt + 1,
+          error: String(e),
+          partialContent: content,
+          partialReasoning: reasoning,
+          rawChunkCount,
+        });
         ContinueLLMAdapter.logDebug(
           `[DeepAgent] _generate attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${String(e)}`,
         );
@@ -916,6 +985,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
       // of this turn's reply arrived as "thinking" blocks vs real content.
       let reasoningChars = 0;
       let reasoningSample = "";
+      let reasoning = ""; // full (untruncated) thinking text, surfaced in llm.log
       let rawChunkCount = 0;
       try {
         for await (const chunk of gen) {
@@ -936,6 +1006,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
               typeof chunk.content === "string" ? chunk.content : "";
             if (thinking) {
               reasoningChars += thinking.length;
+              reasoning += thinking;
               if (reasoningSample.length < 1500) {
                 reasoningSample += thinking.slice(
                   0,
@@ -989,11 +1060,16 @@ export class ContinueLLMAdapter extends BaseChatModel {
           `streamed ${streamedChunks} text chunk(s), chars=${content.length}, toolCalls=${mergedCalls.length}, finishReason=${finishReason ?? "(none)"}`,
         );
 
+        // rawResponse = model text BEFORE finalizeResponse strips text-format
+        // tool-call markers — kept as an unprocessed copy (see _generate).
+        const rawResponse = content;
         const finalized = this.finalizeResponse(content, mergedCalls, lcTools);
 
         // ---- Debug: dump the exact JSON response returned by the model ----
         this.logApiJson("RESPONSE-FROM-MODEL", {
           content: finalized.content,
+          rawResponse,
+          reasoning,
           toolCalls: finalized.toolCalls,
           finishReason,
         });
@@ -1055,8 +1131,28 @@ export class ContinueLLMAdapter extends BaseChatModel {
             path: "stream",
             note: "aborted-by-user",
           });
+          // Leave a trace even when the turn produced no response, so a
+          // "REQUEST with no RESPONSE" gap in llm.log explains itself.
+          this.logApiJson("ERROR-FROM-MODEL", {
+            reason: "aborted-by-user",
+            attempt: attempt + 1,
+            partialContent: content,
+            partialReasoning: reasoning,
+            rawChunkCount,
+          });
           break;
         }
+        // Same for a failed attempt (provider error / crash / stall): without
+        // this, the log only shows the request and the missing response is
+        // indistinguishable from "the model never answered".
+        this.logApiJson("ERROR-FROM-MODEL", {
+          reason: "stream-failed",
+          attempt: attempt + 1,
+          error: String(e),
+          partialContent: content,
+          partialReasoning: reasoning,
+          rawChunkCount,
+        });
         ContinueLLMAdapter.logDebug(
           `[DeepAgent] stream attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${String(e)}`,
         );

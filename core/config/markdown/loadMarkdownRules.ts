@@ -8,6 +8,12 @@ import { joinPathsToUri } from "../../util/uri";
 import { getAllDotContinueDefinitionFiles } from "../loadLocalAssistants";
 
 export const SUPPORTED_AGENT_FILES = ["AGENTS.md", "AGENT.md", "CLAUDE.md"];
+// AGENTS.md is handled by loadSteeringRules with Kiro-style semantics
+// (always-applied, workspace-scoped, loaded first) - loading it here as well
+// would duplicate it in the system prompt.
+const AGENT_FILES_LOADED_HERE = SUPPORTED_AGENT_FILES.filter(
+  (file) => file !== "AGENTS.md",
+);
 /**
  * Loads rules from markdown files in the .continue/rules and .continue/prompts directories
  * and agent files (AGENTS.md, AGENT.md, CLAUDE.md) at workspace root
@@ -24,7 +30,7 @@ export async function loadMarkdownRules(ide: IDE): Promise<{
 
   for (const workspaceDir of workspaceDirs) {
     let agentFileFound = false;
-    for (const fileName of SUPPORTED_AGENT_FILES) {
+    for (const fileName of AGENT_FILES_LOADED_HERE) {
       try {
         const agentFileUri = joinPathsToUri(workspaceDir, fileName);
         const exists = await ide.fileExists(agentFileUri);

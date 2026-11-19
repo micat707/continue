@@ -1,6 +1,7 @@
 import { useContext, useRef, useState } from "react";
 import { IdeMessengerContext } from "../../../../context/IdeMessenger";
 import { useWebviewListener } from "../../../../hooks/useWebviewListener";
+import { useAppSelector } from "../../../../redux/hooks";
 import type { ReviewChangeItem } from "./ReviewChangesCard";
 
 export interface HitlDecision {
@@ -24,14 +25,22 @@ function describePermission(
 ): { verb: string; scope: "read" | "write" } | null {
   switch (name) {
     case "read_file":
+    case "read_files":
       return { verb: "读取文件", scope: "read" };
+    case "list_directory":
     case "ls":
       return { verb: "读取目录", scope: "read" };
+    case "file_search":
+    case "grep_search":
     case "glob":
     case "grep":
       return { verb: "搜索（只读）", scope: "read" };
+    case "fs_write":
     case "write_file":
       return { verb: "写入文件", scope: "write" };
+    case "fs_append":
+      return { verb: "追加文件", scope: "write" };
+    case "str_replace":
     case "edit_file":
       return { verb: "编辑文件", scope: "write" };
     case "delete_file":
@@ -50,100 +59,162 @@ function describePermission(
  * Designed to be mounted once (in LumpToolbar); it returns `active` so the
  * caller can render the ReviewChangesCard inside the Lump toolbar ladder.
  */
+interface PendingApproval {
+  requestId: string;
+  /** The chat session that was active when the interrupt arrived. */
+  sessionId: string | undefined;
+  items: ReviewChangeItem[];
+  actions: PendingAction[];
+}
+
 export function useDeepAgentHitl() {
   const ideMessenger = useContext(IdeMessengerContext);
-  const [items, setItems] = useState<ReviewChangeItem[]>([]);
-  // The pending actionRequests live in a ref (not state) so the decision
-  // builders never read a stale closure: item callbacks created during one
-  // render must still see the full action list when clicked later.
-  const actionsRef = useRef<PendingAction[]>([]);
+  const currentSessionId = useAppSelector((state) => state.session.id);
+  // useWebviewListener registers its handler once; read the live session id
+  // through a ref so the approval is stamped with the session that is actually
+  // displayed when the interrupt message arrives.
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
+
+  // Keyed by requestId, so two sessions paused on approvals do not clobber each
+  // other, and a decision is always routed back to its own request.
+  const [pending, setPending] = useState<Record<string, PendingApproval>>({});
 
   useWebviewListener("deepAgentInterrupt", async (payload: any) => {
     const req = payload?.request;
+    const requestId = payload?.requestId as string | undefined;
+    if (!requestId) {
+      console.warn("[DeepAgentHitl] interrupt without requestId, ignoring");
+      return;
+    }
     const actions = (req?.actionRequests ?? []) as PendingAction[];
-    actionsRef.current = actions;
-    setItems(
-      actions.map((a, i) => {
-        // Command approval: the human must see the FULL command before
-        // deciding. It is shown in the description (the filename chip is
-        // path-specific and would mangle the command). Approving grants this
-        // one run only — there is no session memory for commands.
-        if (a.name === "execute") {
-          const command =
-            typeof a.args?.command === "string" ? a.args.command : "";
-          return {
-            id: String(i),
-            label: "执行命令",
-            filename: undefined,
-            description: command
-              ? `将在 shell 中执行：${command}　（批准仅对本次命令生效）`
-              : "批准后执行该命令（批准仅对本次命令生效）",
-            onAccept: () => decide(i, "approve"),
-            onReject: () => decide(i, "reject"),
-          };
-        }
-        // Background-process start launches an arbitrary shell command too —
-        // same risk profile as `execute`, so the human must also see the FULL
-        // command. (Without this branch it fell into the path branch below,
-        // which has no file_path for control_process: the card rendered a bare
-        // "control_process" chip with no command and the wrong fallback title.)
-        if (a.name === "control_process" && a.args?.action === "start") {
-          const command =
-            typeof a.args?.command === "string" ? a.args.command : "";
-          return {
-            id: String(i),
-            label: "启动后台进程",
-            filename: undefined,
-            description: command
-              ? `将在后台 shell 中启动：${command}　（批准仅对本次命令生效）`
-              : "批准后在后台启动该进程（批准仅对本次命令生效）",
-            onAccept: () => decide(i, "approve"),
-            onReject: () => decide(i, "reject"),
-          };
-        }
-        const p = a.args?.file_path ?? a.args?.path;
-        const perm = describePermission(String(a.name ?? ""));
+    const ownerSessionId = currentSessionIdRef.current;
+
+    const items = actions.map((a, i): ReviewChangeItem => {
+      // Command approval: the human must see the FULL command before
+      // deciding. It is shown in the description (the filename chip is
+      // path-specific and would mangle the command). Approving grants this
+      // one run only — there is no session memory for commands.
+      if (
+        a.name === "execute" ||
+        a.name === "execute_pwsh" ||
+        a.name === "execute_bash"
+      ) {
+        const command =
+          typeof a.args?.command === "string" ? a.args.command : "";
         return {
           id: String(i),
-          label: perm?.verb ?? a.name ?? "tool",
-          filename: typeof p === "string" ? p : undefined,
-          description: perm
-            ? perm.scope === "read"
-              ? "批准后将允许本会话读取该路径及其子内容（其他读取工具同样免审批）；写入操作仍会单独询问"
-              : "批准后将允许本会话对该路径及其子内容执行此操作"
-            : undefined,
-          onAccept: () => decide(i, "approve"),
-          onReject: () => decide(i, "reject"),
+          label: "执行命令",
+          filename: undefined,
+          description: command
+            ? `将在 shell 中执行：${command}　（批准仅对本次命令生效）`
+            : "批准后执行该命令（批准仅对本次命令生效）",
+          onAccept: () => decide(requestId, actions, i, "approve"),
+          onReject: () => decide(requestId, actions, i, "reject"),
         };
-      }),
-    );
+      }
+      // Background-process start launches an arbitrary shell command too —
+      // same risk profile as `execute`, so the human must also see the FULL
+      // command.
+      if (
+        (a.name === "control_process" || a.name === "control_pwsh_process") &&
+        a.args?.action === "start"
+      ) {
+        const command =
+          typeof a.args?.command === "string" ? a.args.command : "";
+        return {
+          id: String(i),
+          label: "启动后台进程",
+          filename: undefined,
+          description: command
+            ? `将在后台 shell 中启动：${command}　（批准仅对本次命令生效）`
+            : "批准后在后台启动该进程（批准仅对本次命令生效）",
+          onAccept: () => decide(requestId, actions, i, "approve"),
+          onReject: () => decide(requestId, actions, i, "reject"),
+        };
+      }
+      const p =
+        a.args?.file_path ??
+        a.args?.path ??
+        a.args?.targetFile ??
+        (Array.isArray(a.args?.paths) ? a.args.paths[0] : undefined);
+      const perm = describePermission(String(a.name ?? ""));
+      return {
+        id: String(i),
+        label: perm?.verb ?? a.name ?? "tool",
+        filename: typeof p === "string" ? p : undefined,
+        description: perm
+          ? perm.scope === "read"
+            ? "批准后将允许本会话读取该路径及其子内容（其他读取工具同样免审批）；写入操作仍会单独询问"
+            : "批准后将允许本会话对该路径及其子内容执行此操作"
+          : undefined,
+        onAccept: () => decide(requestId, actions, i, "approve"),
+        onReject: () => decide(requestId, actions, i, "reject"),
+      };
+    });
+
+    setPending((prev) => ({
+      ...prev,
+      [requestId]: { requestId, sessionId: ownerSessionId, items, actions },
+    }));
   });
 
-  const send = (decisions: HitlDecision[]) => {
-    void ideMessenger.post("deepAgentInterruptResponse", { decisions });
-    actionsRef.current = [];
-    setItems([]);
+  const send = (requestId: string, decisions: HitlDecision[]) => {
+    void ideMessenger.post("deepAgentInterruptResponse", {
+      requestId,
+      decisions,
+    });
+    setPending((prev) => {
+      const next = { ...prev };
+      delete next[requestId];
+      return next;
+    });
   };
 
   // Decisions must be a full parallel array to the interrupt's actionRequests
-  // (LangGraph validates the length), so build from the ref, not from `items`.
-  const decide = (idx: number, type: "approve" | "reject") => {
+  // (LangGraph validates the length), so build from this request's actions.
+  const decide = (
+    requestId: string,
+    actions: PendingAction[],
+    idx: number,
+    type: "approve" | "reject",
+  ) => {
     send(
-      actionsRef.current.map((_, i) => ({
+      requestId,
+      actions.map((_, i) => ({
         id: String(i),
         type: i === idx ? type : "reject",
       })),
     );
   };
 
-  const bulk = (type: "approve" | "reject") => {
-    send(actionsRef.current.map((_, i) => ({ id: String(i), type })));
+  const bulk = (
+    requestId: string,
+    actions: PendingAction[],
+    type: "approve" | "reject",
+  ) => {
+    send(
+      requestId,
+      actions.map((_, i) => ({ id: String(i), type })),
+    );
   };
 
+  // Only render the approval that belongs to the currently displayed session.
+  // When the user switches chat sessions, the other session's card disappears
+  // here while its agent stays paused until that session's decision arrives.
+  const mine = Object.values(pending).filter(
+    (p) => p.sessionId === currentSessionId,
+  );
+  const activeApproval = mine[mine.length - 1];
+
   return {
-    active: items.length > 0,
-    items,
-    bulkApprove: () => bulk("approve"),
-    bulkReject: () => bulk("reject"),
+    active: Boolean(activeApproval),
+    items: activeApproval?.items ?? [],
+    bulkApprove: () =>
+      activeApproval &&
+      bulk(activeApproval.requestId, activeApproval.actions, "approve"),
+    bulkReject: () =>
+      activeApproval &&
+      bulk(activeApproval.requestId, activeApproval.actions, "reject"),
   };
 }

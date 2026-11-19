@@ -42,6 +42,25 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   saveFile: [{ filepath: string }, void];
   fileExists: [{ filepath: string }, boolean];
   readFile: [{ filepath: string }, string];
+  // MicatCode: the GUI (webview) has no Node access, so the extension host
+  // resolves the environment for us (Kiro-style context blocks).
+  micatGetPaths: [
+    undefined,
+    {
+      platform: string;
+      shell: string;
+      homeDirUri: string;
+      globalSteeringDirUri: string;
+      /** fsPath of the first workspace folder, if any */
+      workspaceRoot?: string;
+      /** Ready-made Kiro-style blocks (shell-aware, built by the extension host) */
+      systemInformationBlock: string;
+      platformCommandGuidelinesBlock: string;
+      currentDateTimeBlock: string;
+    },
+  ];
+  /** Kiro-style session-start file tree snapshot (pre-formatted XML string) */
+  micatGetFileTree: [undefined, string];
   getProblems: [{ filepath: string }, Problem[]];
   getOpenFiles: [undefined, string[]];
   getCurrentFile: [

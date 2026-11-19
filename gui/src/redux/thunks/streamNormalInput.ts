@@ -24,6 +24,7 @@ import { setDialogMessage, setShowDialog } from "../slices/uiSlice";
 import StreamErrorDialog from "../../pages/gui/StreamError";
 import { ThunkApiType } from "../store";
 import { constructMessages } from "../util/constructMessages";
+import { getMicatEnvironmentContext } from "../util/environmentBlocks";
 
 import { modelSupportsNativeTools } from "core/llm/toolSupport";
 import { applyToolOverrides } from "core/tools/applyToolOverrides";
@@ -162,12 +163,35 @@ export const streamNormalInput = createAsyncThunk<
       return { ...item, message: messageWithoutId };
     });
 
+    // Kiro-style environment context: system-level blocks (OS/shell/file tree
+    // snapshot, cached per session) + open editor files for the last message.
+    const environmentContext = await getMicatEnvironmentContext(
+      extra.ideMessenger,
+      state.session.id ?? "default",
+    );
+    let openEditorFiles: string[] = [];
+    let activeEditorFileName: string | undefined;
+    try {
+      openEditorFiles = await extra.ideMessenger.ide.getOpenFiles();
+    } catch {
+      // optional context
+    }
+    try {
+      const currentFile = await extra.ideMessenger.ide.getCurrentFile();
+      activeEditorFileName = currentFile?.path;
+    } catch {
+      // optional context
+    }
+
     const { messages, appliedRules, appliedRuleIndex } = constructMessages(
       withoutMessageIds,
       systemMessage,
       state.config.config.rules,
       state.ui.ruleSettings,
       systemToolsFramework,
+      environmentContext,
+      openEditorFiles,
+      activeEditorFileName,
     );
 
     // TODO parallel tool calls will cause issues with this

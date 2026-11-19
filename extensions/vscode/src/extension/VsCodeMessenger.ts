@@ -22,6 +22,7 @@ import { VerticalDiffManager } from "../diff/vertical/manager";
 import { addCurrentSelectionToEdit } from "../quickEdit/AddCurrentSelection";
 import EditDecorationManager from "../quickEdit/EditDecorationManager";
 import { handleLLMError } from "../util/errorHandling";
+import { buildMicatFileTree } from "../util/micatFileTree";
 import { showTutorial } from "../util/tutorial";
 import { getExtensionUri } from "../util/vscode";
 import { VsCodeIde } from "../VsCodeIde";
@@ -33,8 +34,16 @@ import {
   getSessionChangedFiles,
 } from "../deepagents/DeepAgentLLM";
 import {
+  currentDateTimeHint,
+  detectShellAsync,
+  getCachedSessionFileTree,
   getWorkspaceLayout,
+  openFileAncestorDirs,
+  setSessionFileTreeCache,
+  platformCommandGuidelines,
+  prewarmShellDetection,
   showAgentTerminal,
+  systemInformationHint,
 } from "../deepagents/workspaceBackend";
 import { openFullScreenGUIImpl } from "../commands";
 import {
@@ -131,12 +140,22 @@ export class VsCodeMessenger {
     // `execute` backend can stream live command output to the GUI's card.
     setExecuteProgressProtocol(webviewProtocol);
 
+    // Warm the shell detection cache in the background so the first chat
+    // request's environment blocks don't wait for a powershell.exe spawn.
+    prewarmShellDetection();
+
+    // Build marker: makes it obvious in the Extension Host console whether the
+    // running bundle includes the micat environment-context handlers.
+    console.log(
+      "[MicatCode] VsCodeMessenger active (micat env handlers registered)",
+    );
+
     // DeepAgent human-in-the-loop: the GUI's ReviewChangesCard replies here with
     // the user's approve/reject decisions, which unblock the paused agent run.
     this.onWebview(
       "deepAgentInterruptResponse",
-      async ({ data: { decisions } }) => {
-        resolveHitlDecision(decisions);
+      async ({ data: { requestId, decisions } }) => {
+        resolveHitlDecision(requestId, decisions);
       },
     );
 
@@ -578,6 +597,76 @@ export class VsCodeMessenger {
 
     this.onWebviewOrCore("fileExists", async (msg) => {
       return await ide.fileExists(msg.data.filepath);
+    });
+
+    this.onWebviewOrCore("micatGetPaths", async () => {
+      console.log("[MicatCode] micatGetPaths handler reached");
+      const os = await import("os");
+      const platform = os.platform();
+      const shell =
+        platform === "win32"
+          ? "powershell"
+          : (process.env.SHELL?.split("/").pop() ?? "bash");
+      const homeDirUri = vscode.Uri.file(os.homedir()).toString();
+      const globalSteeringDirUri = vscode.Uri.file(
+        os.homedir() + "/.micat/steering",
+      ).toString();
+      const dirs = await ide.getWorkspaceDirs();
+      const workspaceRoot =
+        dirs.length > 0 ? vscode.Uri.parse(dirs[0]).fsPath : undefined;
+      // Shell-aware Kiro-style blocks shared with the DeepAgent flow
+      // (detects PowerShell 5.1/7/cmd/posix and its command quirks).
+      // Per-block try/catch: one failing block must not kill the response
+      // (the GUI runs a hard timeout on this request).
+      let systemInformationBlock = "";
+      let platformCommandGuidelinesBlock = "";
+      let currentDateTimeBlock = "";
+      // Await the SHARED detection (prewarm may still be in flight) - never
+      // start a second synchronous spawn on the request path.
+      try {
+        const detected = await detectShellAsync();
+        systemInformationBlock = systemInformationHint(detected).join("\n");
+        platformCommandGuidelinesBlock =
+          platformCommandGuidelines(detected).join("\n");
+      } catch (e) {
+        console.warn("[MicatCode] shell detection failed:", e);
+      }
+      try {
+        currentDateTimeBlock = currentDateTimeHint().join("\n");
+      } catch (e) {
+        console.warn("[MicatCode] currentDateTimeHint failed:", e);
+      }
+      return {
+        platform,
+        shell,
+        homeDirUri,
+        globalSteeringDirUri,
+        workspaceRoot,
+        systemInformationBlock,
+        platformCommandGuidelinesBlock,
+        currentDateTimeBlock,
+      };
+    });
+
+    this.onWebviewOrCore("micatGetFileTree", async () => {
+      console.log("[MicatCode] micatGetFileTree handler reached");
+      const dirs = await ide.getWorkspaceDirs();
+      if (!dirs.length) {
+        return "";
+      }
+      // Reuse DeepAgent's session tree cache if already captured (avoids a
+      // second full traversal when both paths are active).
+      const rootPath = vscode.Uri.parse(dirs[0]).fsPath;
+      const cached = getCachedSessionFileTree(rootPath);
+      if (cached) {
+        return cached;
+      }
+      const tree = await buildMicatFileTree(
+        vscode.Uri.parse(dirs[0]),
+        openFileAncestorDirs(rootPath),
+      );
+      setSessionFileTreeCache(rootPath, tree);
+      return tree;
     });
 
     this.onWebviewOrCore("gotoDefinition", async (msg) => {

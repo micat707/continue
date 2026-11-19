@@ -2,9 +2,9 @@
  * Turns successful deepagents tool blocks injected by DeepAgentLLM into fenced
  * card blocks that StyledMarkdownPreview renders as Kiro-style outcome cards:
  *
- *   edit_file -> ```editcard``` -> EditOutcomeCard
- *   read_file -> ```readcard``` -> ReadOutcomeCard
- *   execute   -> ```commandcard``` -> CommandOutcomeCard
+ *   str_replace / edit_file -> ```editcard``` -> EditOutcomeCard
+ *   read_file / read_files   -> ```readcard``` -> ReadOutcomeCard
+ *   execute_pwsh / execute   -> ```commandcard``` -> CommandOutcomeCard
  *
  * DeepAgentLLM injects tool activity as markdown wrapped in HTML comments so
  * it can be stripped from history on the next turn. remark-rehype drops HTML
@@ -24,11 +24,11 @@ const BLOCK_RE = /<!--deepagent-tool-->([\s\S]*?)<!--\/deepagent-tool-->/g;
 // formatToolBlock's structure is fixed: tool heading -> json fence -> Result
 // -> output fence (the opening and closing fence markers have equal length).
 const EDIT_BLOCK_RE =
-  /\*\*Tool: `edit_file`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
+  /\*\*Tool: `(?:edit_file|str_replace|fs_write|fs_append)`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
 const READ_BLOCK_RE =
-  /\*\*Tool: `read_file`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
+  /\*\*Tool: `(?:read_file|read_files)`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
 const COMMAND_BLOCK_RE =
-  /\*\*Tool: `execute`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
+  /\*\*Tool: `(?:execute|execute_pwsh|execute_bash)`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
 
 export interface EditCardPayload {
   filePath: string;
@@ -42,6 +42,23 @@ function unescapeJsonString(raw: string): string {
   } catch {
     return raw;
   }
+}
+
+/** Our tools use `path`; Kiro legacy blocks used `file_path`. */
+function extractFilePath(body: string): string {
+  const raw = /"(?:file_path|path|targetFile)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(
+    body,
+  )?.[1];
+  if (raw !== undefined) return unescapeJsonString(raw);
+
+  // read_files passes an array; showing the first path keeps the card compact.
+  const array = /"paths"\s*:\s*\[([\s\S]*?)\]/.exec(body)?.[1];
+  const first = array ? /"((?:[^"\\]|\\.)*)"/.exec(array)?.[1] : undefined;
+  return first !== undefined ? unescapeJsonString(first) : "";
+}
+
+function hasToolHeading(body: string, names: string[]): boolean {
+  return names.some((name) => body.includes(`**Tool: \`${name}\`**`));
 }
 
 /** Shared "heading -> fenced output" extraction used by both block parsers. */
@@ -59,14 +76,18 @@ function extractResultFence(body: string): string | undefined {
 }
 
 function parseEditFileBlock(body: string): EditCardPayload | undefined {
-  if (!body.includes("**Tool: `edit_file`**")) return undefined;
+  if (
+    !hasToolHeading(body, ["edit_file", "str_replace", "fs_write", "fs_append"])
+  ) {
+    return undefined;
+  }
 
-  const rawPath = /"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(body)?.[1] ?? "";
+  const rawPath = extractFilePath(body);
   const result = extractResultFence(body);
 
   // Only successful edits carry the backend's real unified diff.
   if (!result || !result.includes("--- a/")) return undefined;
-  return { filePath: unescapeJsonString(rawPath), result };
+  return { filePath: rawPath, result };
 }
 
 export interface ReadCardPayload {
@@ -76,9 +97,9 @@ export interface ReadCardPayload {
 }
 
 function parseReadFileBlock(body: string): ReadCardPayload | undefined {
-  if (!body.includes("**Tool: `read_file`**")) return undefined;
+  if (!hasToolHeading(body, ["read_file", "read_files"])) return undefined;
 
-  const rawPath = /"file_path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(body)?.[1] ?? "";
+  const rawPath = extractFilePath(body);
   const result = extractResultFence(body);
 
   // Errors stay as plain markdown (same policy as failed edits).
@@ -96,7 +117,7 @@ function parseReadFileBlock(body: string): ReadCardPayload | undefined {
   const lines = header
     ? { start: Number(header[1]), end: Number(header[2]) }
     : undefined;
-  return { filePath: unescapeJsonString(rawPath), lines };
+  return { filePath: rawPath, lines };
 }
 
 export interface CommandCardPayload {
@@ -128,7 +149,9 @@ const TOOL_PENDING_MARKER = "__deepagent_running__";
  * As a fallback we still accept a raw `{ output, exitCode }` JSON envelope.
  */
 function parseExecuteBlock(body: string): CommandCardPayload | undefined {
-  if (!body.includes("**Tool: `execute`**")) return undefined;
+  if (!hasToolHeading(body, ["execute", "execute_pwsh", "execute_bash"])) {
+    return undefined;
+  }
 
   const rawCommand = /"command"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(body)?.[1];
   if (rawCommand === undefined) return undefined;
@@ -151,6 +174,7 @@ function parseExecuteBlock(body: string): CommandCardPayload | undefined {
       running?: boolean;
       output?: string;
       exitCode?: number | null;
+      runId?: string;
     };
     if (parsed.running === true) {
       return {
@@ -166,12 +190,22 @@ function parseExecuteBlock(body: string): CommandCardPayload | undefined {
   }
 
   // Fast path: deepagents' own "[Command <status> with exit code N]" trailer.
+  // "succeeded" may come WITHOUT a code (means exit 0); "failed" may too.
+  // NOTE: deepagents appends "[Output was truncated due to size limits]" AFTER
+  // the status line, so the status line is not the last thing in the string —
+  // strip that trailer before matching (otherwise a successful build ends up
+  // with an "unknown exit code").
+  const cleaned = result.replace(
+    /\s*\[Output was truncated due to size limits\]\s*$/,
+    "",
+  );
   const statusRe =
-    /\[Command (?:succeeded|failed) with exit code (-?\d+)\]\s*$/;
-  const m = result.match(statusRe);
+    /\[Command (succeeded|failed)(?: with exit code (-?\d+))?\]\s*$/;
+  const m = cleaned.match(statusRe);
   if (m) {
-    const code = Number(m[1]);
-    const output = result.slice(0, m.index).replace(/\s+$/, "");
+    const code =
+      m[2] !== undefined ? Number(m[2]) : m[1] === "succeeded" ? 0 : 1;
+    const output = cleaned.slice(0, m.index).replace(/\s+$/, "");
     return { command, output, exitCode: code };
   }
 
@@ -191,7 +225,10 @@ function parseExecuteBlock(body: string): CommandCardPayload | undefined {
   return { command, output, exitCode };
 }
 
-function toFence(payload: EditCardPayload, language: string): string {
+function toFence(
+  payload: EditCardPayload | ReadCardPayload | CommandCardPayload,
+  language: string,
+): string {
   // Single-line JSON: JSON.stringify escapes the newlines, so the fence body
   // can never break the block. A longer fence marker is used when the payload
   // itself contains backticks (mirrors toolFormat.ts's fence()).

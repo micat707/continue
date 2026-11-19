@@ -4,6 +4,7 @@ import {
 } from "openai/resources/index";
 
 import { streamSse } from "@continuedev/fetch";
+import { logRawApi } from "./rawApiLogger.js";
 import {
   ResponseCreateParamsBase,
   ResponseInputItem,
@@ -550,14 +551,15 @@ class OpenAI extends BaseLLM {
     }
 
     const body = this._convertArgs(options, messages);
+    const wireBody = { ...body, ...this.extraBodyProperties() };
+    // The exact JSON payload sent to the model API (temperature / stop / tools
+    // in provider format / messages in API role format) — for agent tuning.
+    logRawApi("RAW-API-REQUEST", JSON.stringify(wireBody));
 
     const response = await this.fetch(this._getEndpoint("chat/completions"), {
       method: "POST",
       headers: this._getHeaders(),
-      body: JSON.stringify({
-        ...body,
-        ...this.extraBodyProperties(),
-      }),
+      body: JSON.stringify(wireBody),
       signal,
     });
 
@@ -566,9 +568,30 @@ class OpenAI extends BaseLLM {
       if (response.status === 499) {
         return; // Aborted by user
       }
-      const data = await response.json();
-      yield data.choices[0].message;
+      const rawText = await response.text();
+      logRawApi("RAW-API-RESPONSE", rawText);
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        return;
+      }
+      yield data.choices?.[0]?.message ?? data;
       return;
+    }
+
+    // Streaming: tee the response so logging the raw SSE bytes does NOT stall
+    // the parse stream that feeds the model output back to the user. The log
+    // branch is read to a string in the background; the parse branch is what
+    // streamSse consumes.
+    let sseResponse = response;
+    if (typeof (response as any).tee === "function") {
+      const [parseBranch, logBranch] = (response as any).tee();
+      sseResponse = parseBranch;
+      logBranch
+        .text()
+        .then((t: string) => logRawApi("RAW-API-RESPONSE", t))
+        .catch(() => {});
     }
 
     // Capture the provider's finish_reason: "stop" = the model chose to end,
@@ -577,7 +600,7 @@ class OpenAI extends BaseLLM {
     // This is the decisive diagnostic for turns that end with plain text and
     // no tool call.
     let finishReason: string | undefined;
-    for await (const value of streamSse(response)) {
+    for await (const value of streamSse(sseResponse)) {
       const chunk = fromChatCompletionChunk(value);
       if (chunk) {
         yield chunk;

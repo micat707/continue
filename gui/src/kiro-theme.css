@@ -1720,6 +1720,21 @@
 /* Mirrors kiro-ui-agent-chat's Run Command card: a collapsed summary (terminal
    icon + "Run Command" + cwd) that expands to reveal the command and its
    terminal output, split by a hairline divider. */
+/* The Run Command card is the one large, always-bordered card (header +
+   command + live output). The base 0.15-alpha border all but disappears on
+   dark themes, so give this card a stronger edge — and keep that edge while
+   the command is still running. The generic `.agent-outcome--running` variant
+   above intentionally fades the border out for the quiet one-row read/execute
+   status row; that treatment would leave this expanded card borderless. */
+.agent-outcome-command {
+  --agentOutcome-border: var(
+    --vscode-agentOutcome-border,
+    rgba(255, 255, 255, 0.28)
+  );
+}
+.agent-outcome-running {
+  border-color: var(--agentOutcome-border);
+}
 .agent-outcome-summary .outcome-chevron {
   margin-inline-start: auto;
   font-size: 13px;
@@ -1813,11 +1828,25 @@
 }
 
 /* The command output is scroll-capped so a long build doesn't blow up the card
-   height; the user can scroll back through the full (live-accumulated) history. */
+   height; the user can scroll back through the full (live-accumulated) history.
+   overflow-x is hidden so a long line WRAPS instead of being cut off at the
+   card's right edge (the old `pre` behaviour made the tail of every line look
+   truncated). */
 .kiro-terminal-content {
-  max-height: 260px;
+  max-height: 320px;
   overflow-y: auto;
+  overflow-x: hidden;
   white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Status badge in the card's title row: the command's conclusion (success /
+   failure / unknown) must be visible WITHOUT expanding the card and scrolling
+   to the bottom of the output. */
+.kiro-command-status {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.9;
 }
 .kiro-running-hint {
   margin-top: 4px;

@@ -29,7 +29,11 @@ interface WorkspaceFilesPageProps {
   fileExt?: string;
   template?: string;
   templates?: SteeringTemplate[];
+  /** Show a Workspace/Global scope switch (Kiro-style steering scopes). */
+  enableGlobalScope?: boolean;
 }
+
+type Scope = "workspace" | "global";
 
 /**
  * Shared CRUD UI for the MicatCode "Workspace" features (Steering/Specs/Hooks/Power).
@@ -45,6 +49,7 @@ export default function WorkspaceFilesPage({
   fileExt = ".md",
   template = "# New entry\n\n",
   templates,
+  enableGlobalScope = false,
 }: WorkspaceFilesPageProps) {
   const ideMessenger = useContext(IdeMessengerContext);
   const navigate = useNavigate();
@@ -58,6 +63,8 @@ export default function WorkspaceFilesPage({
   const [busy, setBusy] = useState(false);
   const [showTplMenu, setShowTplMenu] = useState(false);
   const [copiedName, setCopiedName] = useState<string | null>(null);
+  const [scope, setScope] = useState<Scope>("workspace");
+  const [globalDirUri, setGlobalDirUri] = useState<string | null>(null);
 
   async function refresh(dir: string) {
     try {
@@ -75,15 +82,38 @@ export default function WorkspaceFilesPage({
     (async () => {
       setError(null);
       try {
-        const dirs = await ideMessenger.ide.getWorkspaceDirs();
-        if (!dirs.length) {
-          setError("No workspace folder is open.");
-          return;
+        // The webview has no Node access - the extension host resolves the
+        // global steering dir (Kiro-style global scope).
+        if (enableGlobalScope && !globalDirUri) {
+          try {
+            const response = await ideMessenger.request(
+              "micatGetPaths",
+              undefined,
+            );
+            if (response.status === "success" && response.content) {
+              setGlobalDirUri(response.content.globalSteeringDirUri);
+            }
+          } catch {
+            /* global scope unavailable - stay workspace-only */
+          }
         }
-        const dir = `${dirs[0]}/${BRAND_WORKSPACE_DIR}/${featureKey}`;
+
+        let dir: string;
+        if (scope === "global" && globalDirUri) {
+          dir = globalDirUri;
+        } else {
+          const dirs = await ideMessenger.ide.getWorkspaceDirs();
+          if (!dirs.length) {
+            setError("No workspace folder is open.");
+            return;
+          }
+          dir = `${dirs[0]}/${BRAND_WORKSPACE_DIR}/${featureKey}`;
+        }
         setDirUri(dir);
+        setSelected(null);
+        setContent("");
         try {
-          await ideMessenger.ide.createDirectory(dir);
+          await ideMessenger.request("createDirectory", { path: dir });
         } catch {
           /* directory already exists */
         }
@@ -93,7 +123,7 @@ export default function WorkspaceFilesPage({
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [featureKey]);
+  }, [featureKey, scope]);
 
   // Deep-link support: ?name=<file> auto-selects the matching file.
   // Driven by micat-spec://, micat-steering://, etc. URI handlers.
@@ -232,6 +262,41 @@ export default function WorkspaceFilesPage({
         >
           {description}
         </p>
+        {enableGlobalScope && (
+          <div
+            style={{
+              display: "inline-flex",
+              gap: "0.25rem",
+              marginBottom: "0.5rem",
+              border: "1px solid var(--vsc-input-border, #444)",
+              borderRadius: "4px",
+              overflow: "hidden",
+            }}
+          >
+            {(["workspace", "global"] as Scope[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => setScope(s)}
+                style={{
+                  background:
+                    scope === s
+                      ? "var(--vsc-input-background, #333)"
+                      : "transparent",
+                  border: "none",
+                  color:
+                    scope === s
+                      ? "var(--vsc-foreground, #ddd)"
+                      : "var(--vsc-descriptionForeground, #888)",
+                  padding: "0.25rem 0.6rem",
+                  cursor: "pointer",
+                  fontSize: "0.75rem",
+                }}
+              >
+                {s === "workspace" ? "Workspace" : "Global"}
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ position: "relative", display: "inline-block" }}>
           <Button
             variant="secondary"

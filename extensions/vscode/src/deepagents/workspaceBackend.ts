@@ -26,7 +26,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { exec, execFileSync } from "child_process";
+import { exec, execFile, execFileSync } from "child_process";
 import * as vscode from "vscode";
 import {
   CompositeBackend,
@@ -66,6 +66,12 @@ interface DetectedShell {
 
 let cachedShell: DetectedShell | undefined;
 let cachedShellAt = 0;
+/**
+ * Shared in-flight detection. Both the activation prewarm and the chat
+ * request path await this SAME promise, so a first message that arrives
+ * before prewarm finishes never spawns a second (synchronous) powershell.
+ */
+let shellDetectionPromise: Promise<DetectedShell> | undefined;
 
 function powerShellVersion(exe: string): string {
   try {
@@ -87,7 +93,26 @@ function powerShellVersion(exe: string): string {
 
 function detectShell(): DetectedShell {
   const now = Date.now();
-  if (cachedShell && now - cachedShellAt < 60_000) return cachedShell;
+  // Long TTL: version detection spawns powershell.exe synchronously (slow).
+  // A mid-session shell switch is unrealistic; re-spawning per minute would
+  // add a multi-second stall to the first request of every minute.
+  if (cachedShell && now - cachedShellAt < 10 * 60_000) return cachedShell;
+  // Async detection is already in flight - return a conservative provisional
+  // shell instead of spawning a second one synchronously. (Windows assumes
+  // PowerShell 5.1: no `&&`, which is the safe guidance.)
+  if (shellDetectionPromise) {
+    const raw = (vscode.env.shell || "").toLowerCase();
+    if (raw.includes("pwsh")) {
+      return { raw, family: "powershell7", version: "7", supportsAmp: true };
+    }
+    if (raw.includes("powershell")) {
+      return { raw, family: "powershell5", version: "5.1", supportsAmp: false };
+    }
+    if (os.platform() === "win32") {
+      return { raw, family: "powershell5", version: "5.1", supportsAmp: false };
+    }
+    return { raw, family: "posix", version: "", supportsAmp: true };
+  }
   const raw = (vscode.env.shell || "").toLowerCase();
   let s: DetectedShell;
   if (raw.includes("pwsh")) {
@@ -177,11 +202,12 @@ function platformCommandExamples(shell: DetectedShell): string[] {
  * platform and the exact shell the agent terminal uses. Kept as its own tagged
  * block, separate from the command guidelines, to match Kiro's prompt layout.
  */
-function systemInformationHint(): string[] {
+export function systemInformationHint(
+  shell: DetectedShell = detectShell(),
+): string[] {
   const platform = os.platform();
   const arch = os.arch();
   const release = os.release();
-  const shell = detectShell();
   const osLabel =
     platform === "win32"
       ? "Windows"
@@ -205,6 +231,7 @@ function systemInformationHint(): string[] {
     `Operating System: ${osLabel} ${arch} (release ${release})`,
     `Platform: ${platform}`,
     `Shell: ${shellName}`,
+    `Home Directory: ${os.homedir()}`,
     "</system_information>",
   ];
 }
@@ -214,9 +241,10 @@ function systemInformationHint(): string[] {
  * an adaptation sentence (Kiro's wording) followed by the command equivalents
  * and the critical separator rule (Windows PowerShell 5.1 has NO `&&`).
  */
-function platformCommandGuidelines(): string[] {
+export function platformCommandGuidelines(
+  shell: DetectedShell = detectShell(),
+): string[] {
   const platform = os.platform();
-  const shell = detectShell();
   const osLabel =
     platform === "win32"
       ? "Windows"
@@ -274,7 +302,7 @@ function platformCommandGuidelines(): string[] {
  * Without it the model can misjudge "now" and get past-vs-future / year wrong on
  * date-related queries. Generated fresh each call.
  */
-function currentDateTimeHint(): string[] {
+export function currentDateTimeHint(): string[] {
   const now = new Date();
   const date = now.toLocaleDateString("en-US", {
     year: "numeric",
@@ -344,6 +372,82 @@ function shellPathMapping(
 }
 
 /** All folders currently shown in the Explorer, in order. */
+/**
+ * Async shell detection (execFile, never blocks the extension host thread).
+ * Callers share a single in-flight promise: even if the first chat request
+ * arrives while the activation prewarm is still running, it awaits the same
+ * spawn instead of starting another one. No sync spawn on the request path.
+ */
+export function detectShellAsync(): Promise<DetectedShell> {
+  const now = Date.now();
+  if (cachedShell && now - cachedShellAt < 10 * 60_000) {
+    return Promise.resolve(cachedShell);
+  }
+  if (shellDetectionPromise) {
+    return shellDetectionPromise;
+  }
+
+  const raw = (vscode.env.shell || "").toLowerCase();
+  const isPwsh = raw.includes("pwsh");
+  const isPowerShell = isPwsh || raw.includes("powershell");
+  const isCmd = raw.includes("cmd");
+  const isPosix =
+    raw.includes("bash") ||
+    raw.includes("sh") ||
+    raw.includes("zsh") ||
+    raw.includes("fish");
+
+  // cmd/posix/other needs no spawn - fill the cache synchronously.
+  if (isCmd || isPosix || (!isPowerShell && os.platform() !== "win32")) {
+    return Promise.resolve(detectShell());
+  }
+
+  // PowerShell family: spawn once asynchronously and fill the shared cache.
+  const exe = isPwsh ? "pwsh" : "powershell";
+  const family: DetectedShell["family"] = isPwsh
+    ? "powershell7"
+    : "powershell5";
+  const fallbackVersion = isPwsh ? "7" : "5.1";
+  shellDetectionPromise = new Promise<DetectedShell>((resolve) => {
+    execFile(
+      exe,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$PSVersionTable.PSVersion.ToString()",
+      ],
+      { timeout: 5000, encoding: "utf8" },
+      (err: Error | null, stdout?: string) => {
+        const version =
+          err || !stdout?.trim() ? fallbackVersion : stdout.trim();
+        const shell: DetectedShell = {
+          raw,
+          family,
+          version,
+          supportsAmp: isPwsh,
+        };
+        cachedShell = shell;
+        cachedShellAt = Date.now();
+        shellDetectionPromise = undefined;
+        resolve(shell);
+      },
+    );
+  });
+  return shellDetectionPromise;
+}
+
+/**
+ * Pre-warm the shell detection cache at activation (~1-3s on Windows PS).
+ * Fire-and-forget; the shared promise means a concurrent first request
+ * simply awaits this instead of spawning again.
+ */
+export function prewarmShellDetection(): void {
+  void detectShellAsync().catch(() => {
+    // non-fatal
+  });
+}
+
 export function getWorkspaceFolders(): WorkspaceFolderInfo[] {
   return (vscode.workspace.workspaceFolders ?? []).map((f) => ({
     name: f.name,
@@ -563,8 +667,168 @@ export function translateVirtualPathsInCommand(
   return result;
 }
 
+/**
+ * Resolve an execute `cwd` (Kiro-style) to a real path inside the workspace.
+ * Accepts a virtual mount path (`/memories`), a workspace-relative path
+ * (`src`), or an absolute path that is already one of the workspace roots.
+ * Returns null when the path is empty/outside the workspace; callers then
+ * fall back to the backend's default cwd.
+ */
+function resolveExecuteCwd(
+  cwd: string | null | undefined,
+  mounts: WorkspaceMount[],
+): string | null {
+  if (!cwd || !cwd.trim()) return null;
+  const raw = cwd.trim();
+  const roots = mounts.map((m) => m.realPath.replace(/[\\/]+$/, ""));
+  const isInside = (p: string): boolean =>
+    roots.some(
+      (r) =>
+        p.toLowerCase() === r.toLowerCase() ||
+        p.toLowerCase().startsWith(r.toLowerCase() + path.sep),
+    );
+
+  // Virtual mount path, e.g. "/memories" or "/memories/sub"
+  for (const m of mounts) {
+    const vp = m.virtualPath.replace(/\/+$/, "") || "/";
+    if (vp === "/") {
+      if (raw.startsWith("/")) {
+        const rel = raw.replace(/^[/\\]+/, "");
+        const candidate = path.resolve(m.realPath, rel);
+        if (isInside(candidate)) return candidate;
+      }
+      continue;
+    }
+    if (raw === vp || raw.startsWith(vp + "/") || raw.startsWith(vp + "\\")) {
+      const rel = raw.slice(vp.length).replace(/^[/\\]+/, "");
+      const candidate = path.resolve(m.realPath, rel);
+      if (isInside(candidate)) return candidate;
+    }
+  }
+
+  // Absolute real path (already inside workspace)
+  if (path.isAbsolute(raw)) {
+    const candidate = path.resolve(raw);
+    return isInside(candidate) ? candidate : null;
+  }
+
+  // Workspace-relative path, e.g. "src" → first root/src
+  const candidate = path.resolve(roots[0], raw);
+  return isInside(candidate) ? candidate : null;
+}
+
 /** Run a shell command in `cwd`, returning the deepagents `ExecuteResponse`. */
 const EXEC_TIMEOUT_MS = 120_000;
+/**
+ * Execution tracing for the "exit code unknown" class of bugs. Every decision
+ * point in the terminal-execution path (which API existed, which event fired,
+ * what the exit code was, which path resolved the promise) is written here so a
+ * failing run can be diagnosed from the log alone.
+ *
+ * Goes to two places:
+ *   • the shared "DeepAgent Debug" OutputChannel (same channel name ⇒ same
+ *     instance as the panel/adapter logs), and
+ *   • `<workspace>/tmp/execute-trace.log` (append) — easy to hand over.
+ */
+let execTraceChannel: vscode.OutputChannel | undefined;
+let execTraceFile: string | undefined;
+function execTrace(msg: string, data?: Record<string, unknown>): void {
+  const line = data ? `${msg} ${JSON.stringify(data)}` : msg;
+  // console.log FIRST: the Extension Host's DEBUG CONSOLE is where the user is
+  // actually looking, and it only shows console output (OutputChannel content
+  // lives in the separate OUTPUT panel).
+  try {
+    console.log(`[exec] ${line}`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (!execTraceChannel) {
+      execTraceChannel = vscode.window.createOutputChannel("DeepAgent Debug");
+    }
+    execTraceChannel.appendLine(`[exec] ${line}`);
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (!execTraceFile) {
+      const root = getWorkspaceLayout().mounts[0]?.realPath ?? process.cwd();
+      execTraceFile = path.join(root, "tmp", "execute-trace.log");
+      fs.mkdirSync(path.dirname(execTraceFile), { recursive: true });
+    }
+    fs.appendFileSync(
+      execTraceFile,
+      `${new Date().toISOString()} ${line}\n`,
+      "utf8",
+    );
+  } catch {
+    /* ignore */
+  }
+}
+/**
+ * Ask the SHELL for the previous command's exit status.
+ *
+ * This fork's `TerminalShellExecution` exposes no exit code at all
+ * (`execution.exitCode` is permanently null — verified in the trace log), and
+ * `onDidEndTerminalShellExecution` doesn't exist. But every shell keeps the
+ * status of the last command:
+ *   • PowerShell → `$LASTEXITCODE` (number)  / `$?` (bool)
+ *   • POSIX sh   → `$?` (number)
+ *   • cmd.exe    → `%ERRORLEVEL%`
+ * We send all three spellings in ONE line and parse whichever the shell
+ * actually understood. The probe runs in the SAME terminal as the command, so
+ * it sees that command's status.
+ */
+async function probeShellExitCode(
+  si: any,
+  term: vscode.Terminal,
+): Promise<number | null> {
+  try {
+    const probe =
+      'echo "__EXITCODE__$LASTEXITCODE"; echo "__EXITCODE__$?"; echo "__EXITCODE__%ERRORLEVEL%"';
+    const ex = si.executeCommand(probe);
+    if (!ex || typeof ex.read !== "function") return null;
+    let text = "";
+    for await (const data of ex.read() as AsyncIterable<Uint8Array>) {
+      text += Buffer.from(data).toString("utf8");
+      if (text.length > 8192) break;
+    }
+    // A number is authoritative (PowerShell's $LASTEXITCODE, sh's $?, cmd's
+    // %ERRORLEVEL%). Take the FIRST numeric match: in PowerShell the first
+    // echo already carries $LASTEXITCODE.
+    const nums = [...text.matchAll(/__EXITCODE__(\d+)/g)].map((m) =>
+      Number(m[1]),
+    );
+    if (nums.length) return nums[0];
+    // PowerShell's `$?` is a boolean — True means the previous command
+    // succeeded.
+    const bool = /__EXITCODE__\s*(True|False)/i.exec(text);
+    if (bool) return bool[1].toLowerCase() === "true" ? 0 : 1;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Maximum TOTAL runtime for a command, in ms — the hard cap that applies even
+ * while the command keeps producing output. Configurable via
+ * `continue.deepAgent.execute.maxCommandRuntime` (default 10 minutes). When it
+ * is exceeded the command is TERMINATED (Ctrl+C) and the agent is told to try a
+ * different approach — the command is NOT left running in the background.
+ */
+function execMaxRuntimeMs(): number {
+  const cfg = vscode.workspace
+    .getConfiguration("continue")
+    .get<number>("deepAgent.execute.maxCommandRuntime");
+  return typeof cfg === "number" && cfg > 0 ? cfg : 10 * 60_000;
+}
+/**
+ * Exit code used when WE terminate a command that ran past its time budget.
+ * 124 matches GNU `timeout`'s convention, so it reads as "timed out" rather
+ * than "the tool crashed".
+ */
+const EXIT_CODE_TIMED_OUT = 124;
 const EXEC_MAX_BUFFER = 10 * 1024 * 1024;
 /** How long to wait for VS Code shell integration to come up before giving up
  *  and falling back to headless exec. */
@@ -1010,7 +1274,24 @@ async function runCommandViaTerminal(
   truncated: boolean;
 } | null> {
   const term = await ensureAgentTerminal(cwd);
-  const si = await agentShellIntegration;
+  // Do NOT reuse the cached `agentShellIntegration` promise here. It is
+  // resolved once when the terminal is created, and in this fork that object
+  // can go stale between long builds; calling `executeCommand` on the stale
+  // object throws and silently falls back to headless exec, leaving the
+  // visible terminal empty. Always pick up the terminal's current integration.
+  let si: any;
+  if (term) {
+    si =
+      term.shellIntegration ??
+      (await waitForShellIntegration(term, SHELL_INTEGRATION_TIMEOUT_MS));
+  }
+  execTrace("run:start", {
+    command,
+    cwd,
+    terminalReused: !!term,
+    shellIntegrationAvailable: !!si,
+    hasExecuteCommand: typeof (si as any)?.executeCommand === "function",
+  });
   if (!term || !si || typeof (si as any).executeCommand !== "function")
     return null;
   if (signal?.aborted) {
@@ -1021,17 +1302,88 @@ async function runCommandViaTerminal(
     };
   }
 
-  let execution: any;
+  // Some forks' shell-integration `read()` only yields at process end, so the
+  // chat card would stay empty while the real terminal streams output. Capture
+  // terminal writes directly as a second live source (same approach as the
+  // background-process path). Final output still comes from `read()`, so this
+  // only feeds the live card and the silence watcher.
+  let terminalLiveText = "";
+  let terminalDataListener: vscode.Disposable | undefined;
+  let lastDataAt = Date.now();
+  const w = vscode.window as any;
+  // `onDidWriteTerminalData` EXISTS as a function on this fork's `window` API
+  // but THROWS "CANNOT use API proposal: terminalDataWriteEvent" at call time
+  // when the proposal isn't granted via product.json. A bare `typeof` check
+  // isn't enough — the throw used to escape runCommandViaTerminal, forcing the
+  // whole command down the headless fallback, which emits NO progress events
+  // and leaves the Run Command card stuck on "（命令执行中…）" with no output.
+  let hasTerminalDataStream = false;
   try {
-    execution = (si as any).executeCommand(command);
-  } catch {
+    if (typeof w.onDidWriteTerminalData === "function") {
+      terminalDataListener = w.onDidWriteTerminalData((e: any) => {
+        if (e?.terminal === term) {
+          terminalLiveText += Buffer.from(e.data ?? "").toString("utf8");
+          lastDataAt = Date.now();
+        }
+      });
+      hasTerminalDataStream = true;
+      execTrace("run:live-terminal-data", { source: "onDidWriteTerminalData" });
+    } else {
+      execTrace("run:live-terminal-data", { source: "unavailable" });
+    }
+  } catch (err) {
+    execTrace("run:live-terminal-data", {
+      source: "proposal-denied",
+      error: String(err),
+    });
+  }
+
+  let execution: any;
+  let readFn: (() => Promise<string | undefined>) | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      execution = (si as any)?.executeCommand(command);
+      if (typeof execution?.read === "function") {
+        readFn = execution.read.bind(execution);
+        break;
+      }
+      execTrace("run:execute-no-read", {
+        attempt,
+        keys: Object.keys(execution ?? {}),
+      });
+    } catch (err) {
+      execTrace("run:execute-threw", { attempt, error: String(err) });
+    }
+    execution = undefined;
+    readFn = undefined;
+    if (attempt === 0 && term) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      si =
+        term.shellIntegration ??
+        (await waitForShellIntegration(term, SHELL_INTEGRATION_TIMEOUT_MS));
+    }
+  }
+  if (!readFn) {
+    execTrace("run:no-terminal-execution", { command });
+    terminalDataListener?.dispose();
     return null;
   }
-  const readFn =
-    typeof execution?.read === "function"
-      ? execution.read.bind(execution)
-      : undefined;
-  if (!readFn) return null;
+
+  // Which VS Code APIs actually EXIST at runtime in this fork? The typings
+  // don't declare onDidEndTerminalShellExecution / TerminalShellExecution, so
+  // the exit-code plumbing may be running against APIs that aren't there —
+  // this line answers that question directly.
+  execTrace("run:apis", {
+    window_onDidEndTerminalShellExecution: typeof (vscode.window as any)
+      .onDidEndTerminalShellExecution,
+    window_onDidChangeTerminalShellIntegration: typeof (vscode.window as any)
+      .onDidChangeTerminalShellIntegration,
+    window_onDidCloseTerminal: typeof vscode.window.onDidCloseTerminal,
+    execution_ctor: execution?.constructor?.name,
+    execution_hasExitCodeProp: "exitCode" in (execution ?? {}),
+    execution_exitCodeAtStart: execution?.exitCode,
+    execution_keys: Object.keys(execution ?? {}).slice(0, 12),
+  });
 
   liveExecuteActive = true;
   liveExecuteText = "";
@@ -1044,9 +1396,17 @@ async function runCommandViaTerminal(
   // right before this call started.
   const progressRunId = pendingExecuteRunId;
   let sentLen = 0;
+  // Choose ONE live source for the whole run and stick with it: `sentLen` is an
+  // offset into a single stream, so switching streams mid-run would duplicate
+  // or skip output in the card. When the proposed-API subscription succeeded
+  // use the terminal-write stream (echo + output); otherwise use the shell
+  // integration read() stream. Crucially, an ungranted proposal must not leave
+  // terminalLiveText permanently "" and shadow a perfectly good read() stream.
+  const getLiveSource = () =>
+    hasTerminalDataStream ? terminalLiveText : liveExecuteText;
   const postProgress = (done = false, code: number | null = null) => {
     try {
-      const stripped = stripAnsi(liveExecuteText);
+      const stripped = stripAnsi(getLiveSource());
       const chunk = stripped.slice(sentLen);
       if (chunk) {
         postExecuteProgress(progressRunId, chunk);
@@ -1066,8 +1426,14 @@ async function runCommandViaTerminal(
   let finished = false;
   let interactiveStall = false;
   let revealedIdle = false;
-  let lastDataAt = Date.now();
   let accText = "";
+  // Start of THIS command (for timings in the trace log).
+  const startedAtMs = Date.now();
+  // Set when the command's OUTPUT STREAM ends — for VS Code shell integration
+  // that stream closes exactly when the command finishes, so it is the one
+  // reliable "the command is over" signal when no exit code is reported.
+  let outputStreamEnded = false;
+  let onOutputStreamEnded: (() => void) | undefined;
 
   // Surface the terminal when a command is blocked on input (focus it so the
   // user can type), or — after a longer silence with no identifiable prompt —
@@ -1122,6 +1488,17 @@ async function runCommandViaTerminal(
     } catch {
       // ignore stream errors — we already have whatever arrived
     }
+    // The stream ended → the command is over (shell integration closes the
+    // execution's output stream when the command finishes). This is the
+    // dependable end-of-command signal on forks that don't report an exit
+    // code.
+    outputStreamEnded = true;
+    execTrace("run:output-stream-ended", {
+      elapsedMs: Date.now() - startedAtMs,
+      bytes: totalBytes,
+      executionExitCode: execution?.exitCode,
+    });
+    onOutputStreamEnded?.();
   })();
 
   let abortedByUser = false;
@@ -1140,9 +1517,18 @@ async function runCommandViaTerminal(
   let exitPoll: ReturnType<typeof setInterval> | undefined;
   let closeListener: vscode.Disposable | undefined;
   let abortRemover: (() => void) | undefined;
-  const doResolve = (exit: number | null) => {
+  const doResolve = (exit: number | null, source: string) => {
     if (resolved) return;
     resolved = true;
+    execTrace("run:resolved", {
+      exit,
+      source,
+      elapsedMs: Date.now() - startedAtMs,
+      idleMs: Date.now() - lastDataAt,
+      timedOut,
+      abortedByUser,
+      interactiveStall,
+    });
     try {
       exitListener?.dispose();
     } catch {
@@ -1172,33 +1558,78 @@ async function runCommandViaTerminal(
   };
   const exitPromise = new Promise<{ exit: number | null }>((res) => {
     resolveExit = res;
-    if (execution.exitCode !== undefined) {
-      // Fast command — already finished.
-      doResolve((execution.exitCode ?? 0) as number);
+    if (typeof execution.exitCode === "number") {
+      // Fast command — already finished with a status.
+      doResolve(execution.exitCode as number, "fast-path");
       return;
     }
     try {
       exitListener = vscode.window.onDidEndTerminalShellExecution((e: any) => {
-        if (e.execution === execution) doResolve((e.exitCode ?? 0) as number);
+        execTrace("run:event-end-execution", {
+          sameExecution: e.execution === execution,
+          eventExitCode: e.exitCode,
+          executionExitCode: execution?.exitCode,
+        });
+        if (e.execution === execution)
+          doResolve((e.exitCode ?? 0) as number, "end-execution-event");
       });
-    } catch {
+      execTrace("run:listeners", {
+        endExecutionListener: exitListener ? "registered" : "unavailable",
+      });
+    } catch (err) {
       exitListener = undefined;
+      execTrace("run:listeners", {
+        endExecutionListener: "threw",
+        error: String(err),
+      });
     }
     // Safety net in case the end event never fires on this fork.
+    // NOTE: `execution.exitCode` starts out as NULL on this fork, so testing
+    // only `!== undefined` resolved the promise ~250 ms into the run — the
+    // command was still going, we returned immediately, and the card ended up
+    // with a truncated log and an "unknown" exit code. Only a NUMBER means
+    // "the command finished and here is its status".
     exitPoll = setInterval(() => {
-      if (execution.exitCode !== undefined)
-        doResolve(execution.exitCode as number);
+      const ec = execution?.exitCode;
+      if (typeof ec === "number") {
+        execTrace("run:poll-exit-code", { exitCode: ec });
+        doResolve(ec, "exit-code-poll");
+      }
     }, 250);
     // Terminal killed directly (the "kill terminal" button): the running
     // command is gone; stop waiting so the turn can wind down.
     try {
       closeListener = vscode.window.onDidCloseTerminal((t: any) => {
-        if (t === term) doResolve(execution.exitCode ?? null);
+        if (t === term) {
+          execTrace("run:event-terminal-closed", {
+            executionExitCode: execution?.exitCode,
+          });
+          doResolve(execution.exitCode ?? null, "terminal-closed");
+        }
       });
     } catch {
       closeListener = undefined;
     }
   });
+
+  // The output stream closing IS the end-of-command signal on forks that don't
+  // report an exit code. Wire it up now (after doResolve exists), and also
+  // handle the case where the stream already ended before we got here.
+  onOutputStreamEnded = async () => {
+    if (resolved) return;
+    const ec = execution?.exitCode;
+    if (typeof ec === "number") {
+      doResolve(ec, "output-stream-ended");
+      return;
+    }
+    // No exit code from VS Code on this fork → ask the shell itself.
+    const probed = await probeShellExitCode(si, term);
+    execTrace("run:shell-probe", { probed });
+    doResolve(probed, probed === null ? "output-stream-ended" : "shell-probe");
+  };
+  if (outputStreamEnded && !resolved) {
+    onOutputStreamEnded();
+  }
 
   // User abort (the "Stop" button): interrupt the running command with Ctrl+C
   // and stop waiting. Without this, a long-running terminal command keeps the
@@ -1211,7 +1642,7 @@ async function runCommandViaTerminal(
       } catch {
         /* ignore */
       }
-      doResolve(null);
+      doResolve(null, "user-abort");
     };
     if (signal.aborted) {
       onAbort();
@@ -1234,71 +1665,134 @@ async function runCommandViaTerminal(
     exitPromise,
     new Promise<{ exit: number | null }>((resolve) => {
       const startedAt = Date.now();
-      const hardCapMs = Math.max(timeoutMs * 5, 10 * 60_000);
+      const hardCapMs = execMaxRuntimeMs();
       killTimeoutTimer = setInterval(() => {
         if (finished) return;
         const idleMs = Date.now() - lastDataAt;
         const totalMs = Date.now() - startedAt;
-        if (totalMs >= hardCapMs) {
-          timeoutReason = `hard limit of ${Math.round(hardCapMs / 1000)} s total`;
-        } else if (idleMs >= timeoutMs) {
-          timeoutReason = `no output for ${Math.round(timeoutMs / 1000)} s`;
-        } else {
+        // Two independent budgets:
+        //  • hard cap — TOTAL runtime. Applies even while the command streams
+        //    output; when it expires the command is TERMINATED so the agent
+        //    stops waiting and can try a different approach.
+        //  • idle  — SILENCE. A command that keeps producing output never
+        //    trips this one, so long builds are fine.
+        const hitHardCap = totalMs >= hardCapMs;
+        if (!hitHardCap && idleMs < timeoutMs) {
           return; // still streaming (or below both thresholds) — keep waiting
         }
         timedOut = true;
-        // On timeout we do NOT kill the command (mirrors Kiro) — it keeps
-        // running in the now-visible terminal so the user can interact with it.
-        if (interactiveStall) {
+        if (hitHardCap) {
+          timeoutReason = `exceeded the maximum runtime of ${Math.round(
+            hardCapMs / 1000,
+          )} s`;
+        } else {
+          timeoutReason = `no output for ${Math.round(timeoutMs / 1000)} s`;
+        }
+        if (interactiveStall && !hitHardCap) {
+          // Waiting for USER input ([y/n], password): don't kill it — focus the
+          // terminal so the user can answer, and report the status as unknown.
           try {
             term.show(false); // focus so the user can respond
           } catch {
             /* ignore */
           }
-        } else {
-          try {
-            term.show(true);
-          } catch {
-            /* ignore */
-          }
+          resolve({ exit: execution.exitCode ?? null });
+          execTrace("run:timeout-interactive-stall", {
+            exit: execution.exitCode ?? null,
+            idleMs,
+            totalMs,
+          });
+          return;
         }
-        resolve({ exit: null });
+        // Terminate the command (Ctrl+C) — it is past its time budget, so
+        // leaving it running would only keep the agent waiting on a result
+        // that may never matter. The terminal stays open with the captured
+        // output so the user can still inspect it.
+        try {
+          term.sendText("\u0003"); // Ctrl+C
+        } catch {
+          /* ignore */
+        }
+        try {
+          term.show(true);
+        } catch {
+          /* ignore */
+        }
+        resolve({ exit: EXIT_CODE_TIMED_OUT });
+        execTrace("run:timeout-terminated", {
+          exit: EXIT_CODE_TIMED_OUT,
+          reason: timeoutReason,
+          idleMs,
+          totalMs,
+          hardCap: hitHardCap,
+        });
       }, 1000);
     }),
   ]);
 
   const { exit } = await exitOrTimeout;
   finished = true;
-  doResolve(exit); // ensure all listeners are cleaned up
+  doResolve(exit, "race-winner"); // ensure all listeners are cleaned up
   if (killTimeoutTimer) clearInterval(killTimeoutTimer);
   clearInterval(stallWatcher);
-  // Give the output stream a moment to flush trailing bytes (terminal data
-  // events can lag slightly behind the end-of-execution signal).
-  await Promise.race([readTask, new Promise<void>((r) => setTimeout(r, 1500))]);
+  // Wait for the output stream to finish so the card gets the command's FULL
+  // output (BUILD SUCCESS and the trailing error live at the very end). The
+  // 1.5 s cap only applies when the stream never closes (e.g. we terminated the
+  // command ourselves) — otherwise it would truncate the log.
+  if (!outputStreamEnded) {
+    await Promise.race([
+      readTask,
+      new Promise<void>((r) => setTimeout(r, 1500)),
+    ]);
+  } else {
+    await readTask;
+  }
 
   const full = stripAnsi(decodeConsoleOutput(Buffer.concat(chunks)));
   const offloaded = offloadIfLarge(full, cwd);
   let output = offloaded.output;
   if (timedOut) {
     const kb = Math.round(full.length / 1024);
+    // The note is read by the MODEL, so it must tell it what to do next —
+    // otherwise the agent just re-runs the same doomed command.
     const stallNote = interactiveStall
-      ? " Command appears to be WAITING FOR INPUT (e.g. [y/n] / password) — the terminal is focused; type your response there, or ask the user to respond."
-      : " The command may still be RUNNING in the visible terminal (not killed).";
+      ? " The command appears to be WAITING FOR INPUT (e.g. [y/n] / password) — the terminal is focused; type your response there, or ask the user to respond."
+      : " The command was TERMINATED (Ctrl+C) because it ran past its time budget.";
+    const advice =
+      " Do NOT re-run the same command — try a different approach (e.g. a faster/smaller target, an explicit --timeout flag, or splitting the work into steps). Do NOT use `control_process` to track it either: that command was terminated, so start the next attempt with `execute`.";
     const where = offloaded.offloaded
       ? "the offload file referenced above"
       : "tmp/ (open the terminal or re-run to capture it)";
     output +=
-      `\n… [stopped waiting: ${timeoutReason}; ${kb} KB captured so far.${stallNote} ` +
+      `\n… [stopped waiting: ${timeoutReason}; ${kb} KB captured so far.${stallNote}${advice} ` +
       `Full captured text is at ${where}] …\n`;
   } else if (abortedByUser) {
     output = output.trimEnd()
       ? output +
         "\n… [命令已被用户终止（Ctrl+C）。已捕获的中断前输出见上/落盘文件] …\n"
       : "（命令已被用户终止，无输出）";
+  } else if (exit === null) {
+    // No exit code at all (terminal closed / this fork's shell integration
+    // didn't report one). Say it explicitly: the card shows "unknown" for this
+    // case, and the note explains why instead of silently looking failed.
+    output = output.trimEnd()
+      ? output +
+        "\n… [未能获取退出码（终端被关闭或 shell integration 未回传）—— 状态未知，不代表失败] …\n"
+      : "（命令无输出，且未能获取退出码——状态未知，不代表失败）";
   }
   if (progressTimer) clearInterval(progressTimer);
+  terminalDataListener?.dispose();
   postProgress(true, exit); // final slice + completion signal (flip card in place)
   liveExecuteActive = false; // done — stop exposing live tail
+  execTrace("run:final", {
+    exit,
+    totalMs: Date.now() - startedAtMs,
+    bytes: full.length,
+    timedOut,
+    abortedByUser,
+    interactiveStall,
+    outputTail: full.slice(-200).replace(/\s+/g, " ").slice(-200),
+  });
   return { output, exitCode: exit, truncated: offloaded.offloaded };
 }
 
@@ -1307,6 +1801,7 @@ function runCommandViaExec(
   command: string,
   cwd: string,
   signal?: AbortSignal,
+  timeoutMs?: number | null,
 ): Promise<{ output: string; exitCode: number | null; truncated: boolean }> {
   return new Promise((resolve) => {
     exec(
@@ -1316,7 +1811,11 @@ function runCommandViaExec(
         windowsHide: true,
         shell: true,
         maxBuffer: EXEC_MAX_BUFFER,
-        timeout: execTimeoutMs(),
+        // `exec` only supports a total-time budget (no "silence" mode), so the
+        // hard cap is the right knob here. The command is killed by Node when
+        // it fires. An explicit per-call timeout (Kiro's `timeout` param)
+        // overrides the configured default.
+        timeout: timeoutMs && timeoutMs > 0 ? timeoutMs : execMaxRuntimeMs(),
         encoding: "buffer", // raw bytes — decoded by decodeConsoleOutput below
         // Kill the child immediately when the user presses "Stop".
         ...(signal ? { signal } : {}),
@@ -1332,17 +1831,42 @@ function runCommandViaExec(
         );
         const offloaded = offloadIfLarge(full, cwd);
         let exitCode: number | null = 0;
+        let timedOutNote = false;
+        execTrace("exec:done", {
+          cwd,
+          exitCode,
+          errorCode: (error as any)?.code,
+          errorSignal: (error as any)?.signal,
+          killed: (error as any)?.killed,
+          bytes: full.length,
+        });
         if (error) {
           if (typeof error.code === "number") exitCode = error.code;
           else if (
-            (error as NodeJS.ErrnoException).killed ||
-            error.code === "ETIMEDOUT"
-          )
-            exitCode = null;
-          else exitCode = 1;
+            error.code === "ETIMEDOUT" ||
+            (error as NodeJS.ErrnoException).killed
+          ) {
+            // Node killed the child — either our time budget fired or the user
+            // pressed "Stop". Only the former is a timeout.
+            if (signal?.aborted === true) {
+              exitCode = null; // user stop — status unknown
+            } else {
+              exitCode = EXIT_CODE_TIMED_OUT;
+              timedOutNote = true;
+            }
+          } else exitCode = 1;
+        }
+        let output = offloaded.output;
+        if (timedOutNote) {
+          const kb = Math.round(full.length / 1024);
+          output +=
+            `\n… [stopped waiting: exceeded the maximum runtime of ${Math.round(
+              execMaxRuntimeMs() / 1000,
+            )} s; ${kb} KB captured so far. The command was TERMINATED because it ran past its time budget.` +
+            ` Do NOT re-run the same command — try a different approach (e.g. a faster/smaller target, an explicit --timeout flag, or splitting the work into steps).] …\n`;
         }
         resolve({
-          output: offloaded.output,
+          output,
           exitCode,
           truncated: offloaded.offloaded,
         });
@@ -1365,6 +1889,7 @@ function runCommand(
   command: string,
   cwd: string,
   danger?: { real: string[]; prefixes: string[] },
+  timeoutMs?: number | null,
 ): Promise<{ output: string; exitCode: number | null; truncated: boolean }> {
   // Observe the current turn's abort so "Stop" ends a running command too.
   const signal = activeTurnAbort;
@@ -1396,7 +1921,7 @@ function runCommand(
   }
   return runCommandViaTerminal(command, cwd, signal)
     .catch(() => null)
-    .then((r) => r ?? runCommandViaExec(command, cwd, signal));
+    .then((r) => r ?? runCommandViaExec(command, cwd, signal, timeoutMs));
 }
 
 // ---------------------------------------------------------------------------
@@ -1612,6 +2137,20 @@ export function listBackgroundProcesses(): Array<{
 }
 
 /**
+ * Split a leading `cd "<dir>" ; <cmd>` into the directory and the real
+ * command. The `control_process` tool description tells the model to pass
+ * `cwd` instead, but models frequently prefix the command with a `cd` anyway —
+ * without this the process would start in the wrong directory (or fail on a
+ * bare `cd`).
+ */
+function splitCdPrefix(command: string): { cwd?: string; command: string } {
+  const m = /^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*;\s*([\s\S]+)$/.exec(command);
+  if (!m) return { command };
+  const dir = m[1].replace(/^["']|["']$/g, "");
+  return { cwd: dir, command: m[2] };
+}
+
+/**
  * Build the three custom tools that expose the background-process registry to the
  * model (mirrors Kiro's `control_pwsh_process` + `get_process_output` /
  * `list_processes`). Returned as LangChain `DynamicStructuredTool`s so they drop
@@ -1621,28 +2160,52 @@ export function listBackgroundProcesses(): Array<{
 export function createBackgroundProcessTools(): DynamicStructuredTool[] {
   return [
     new DynamicStructuredTool({
-      name: "control_process",
+      name: "control_pwsh_process",
       description: [
-        "Control LONG-RUNNING background processes (dev servers, build watchers,",
-        "test watchers, daemons) so they run in their own terminal WITHOUT blocking",
-        "your turn.",
+        "Control background processes by starting or stopping them. This tool combines process management functionality into a single interface.",
         "",
-        "# ACTIONS",
-        '- "start": run a shell command as a background process (e.g. `npm run dev`,',
-        "  `yarn start`, `webpack --watch`, `python manage.py runserver`). Returns",
-        "  IMMEDIATELY with a `terminalId`; the process keeps running in its own",
-        "  terminal. Poll its output with `get_process_output` and list all with",
-        "  `list_processes`. An identical running process (same command + cwd) is",
-        "  reused instead of starting a duplicate.",
-        '- "stop": terminate a background process by `terminalId` and free its terminal.',
+        "# ACTIONS:",
+        '- "start": Execute a PowerShell command as a background process. Designed for commands that don\'t terminate quickly (like dev servers, build watchers, etc.).',
+        '- "stop": Terminate a background process and close its terminal, cleaning up resources.',
+        "",
+        "# START ACTION:",
+        "If a process already exists for the same command and working directory, it will be reused. Once a process is started you can read its output using the get_process_output tool and list all ongoing processes using the list_processes tool.",
+        "",
+        "## Examples:",
+        "- npm run dev (development servers)",
+        "- webpack --watch (build watchers)  ",
+        "- python manage.py runserver (Django dev server)",
+        "- yarn start (React development server)",
+        "",
+        '## Parameters for "start":',
+        '- action: "start"',
+        "- command: (required) The command of the background process",
+        "- cwd: (optional) The working directory path where the process is supposed to run",
+        "",
+        '## Returns for "start":',
+        "- terminalId: a unique identifier of the process",
+        "- isReused: indicates whether a process was reused",
+        "",
+        "# STOP ACTION:",
+        'Stops a background process that was started with the "start" action and cleans up its associated resources.',
+        "",
+        '## Parameters for "stop":',
+        '- action: "stop"',
+        '- terminalId: (required) The unique identifier of the background process (returned by "start" action or found in list_processes)',
+        "",
+        '## Returns for "stop":',
+        "- success: boolean indicating if termination was successful",
+        "- message: descriptive message about the operation",
         "",
         "# RULES",
-        "- Use `start` ONLY for commands that do NOT exit quickly. For normal",
-        "  one-shot commands use the `execute` tool instead.",
-        "- NEVER use `cd` — pass the `cwd` argument to choose the working directory.",
-        "  A bare `cd` will fail.",
-        "- The `start` action returns immediately; do not wait for the process to",
-        "  finish before continuing with other tasks.",
+        '- USE "start" exclusively for long-running commands like development servers (npm run dev, yarn start) and build watchers (webpack --watch).',
+        "- NEVER use the 'cd' command! If you wish to run a command in a subdirectory of the workspace, provide the relative path in the 'cwd' parameter.",
+        "- USING THE 'cd' command will result in a failure.",
+        "",
+        "# NOTES",
+        '- The "start" action returns immediately without waiting for the process to complete, allowing you to continue with other tasks while the process runs in the background.',
+        "- If a process with the same command and working directory is already running, it will be reused instead of creating a new process.",
+        '- A terminated process cannot be started again with the same terminalId. But an equivalent process can be started again with the "start" action, which may result in a different terminalId.',
       ].join("\n"),
       schema: z.object({
         action: z
@@ -1673,8 +2236,16 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
       func: async (input: any) => {
         if (input.action === "start") {
           const layout = getWorkspaceLayout();
-          const cwd = input.cwd || layout.mounts[0]?.realPath || process.cwd();
-          const r = startBackgroundProcess(input.command ?? "", cwd);
+          // Models sometimes write `cd "<dir>" ; <cmd>` instead of passing
+          // `cwd` (the tool description forbids it, but they do it anyway).
+          // Peel that prefix off so the command still runs in the right place.
+          const peeled = splitCdPrefix(input.command ?? "");
+          const preferred = input.cwd || peeled.cwd;
+          const cwd =
+            preferred && fs.existsSync(preferred)
+              ? preferred
+              : layout.mounts[0]?.realPath || process.cwd();
+          const r = startBackgroundProcess(peeled.command, cwd);
           if (r.error) return r.error;
           return JSON.stringify({
             terminalId: r.terminalId,
@@ -1687,7 +2258,21 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
     new DynamicStructuredTool({
       name: "get_process_output",
       description:
-        "Read the captured output of a background process started with `control_process` 'start'. Returns the `output` and whether it is still `running`. Use it to confirm a dev server started ('ready'/'listening') or to surface later errors.",
+        "Read the output from a background process. This tool allows you to monitor the output of background processes started with the control_pwsh_process tool. This is useful for:\n" +
+        "- Checking if a development server started successfully\n" +
+        "- Debugging build errors in watch processes\n" +
+        "- Monitoring the status or viewing logs of background processes\n" +
+        "\n" +
+        "# PARAMETERS:\n" +
+        "- terminalId: (required) The unique identifier of the background process (returned by control_pwsh_process or found in list_processes)\n" +
+        "- lines: number of lines to limit output (useful for large outputs)\n" +
+        "\n" +
+        "# RETURNS:\n" +
+        "- output: the terminal output as text\n" +
+        "\n" +
+        "# NOTES:\n" +
+        "- The output includes both stdout and stderr from the terminal.\n" +
+        "- Use the terminalId returned by control_pwsh_process or found in list_processes.",
       schema: z.object({
         terminalId: z
           .string()
@@ -1709,7 +2294,14 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
     new DynamicStructuredTool({
       name: "list_processes",
       description:
-        "List all currently tracked background processes (terminalId, command, cwd, running). Use it to discover terminalIds or check what is still running.",
+        "List all background processes currently managed by Kiro. This tool shows all background processes that have been started using the control_pwsh_process tool, including their current status, commands and working directories. This is useful for monitoring active development processes and checking which servers are running.\n" +
+        "\n" +
+        "# RETURNS:\n" +
+        "- processes: a list of background processes with terminalId, command, path, status:\n" +
+        "  - terminalId: unique identifier for the process\n" +
+        "  - command: the command that is being executed\n" +
+        "  - path: the working directory path\n" +
+        "  - status: current status (running, stopped, unknown)",
       schema: z.object({}),
       func: async () => JSON.stringify(listBackgroundProcesses()),
     }),
@@ -1729,17 +2321,21 @@ class WorkspaceExecBackend extends FilesystemBackend {
     super({ rootDir: dir, virtualMode: true });
     this.cwd = dir;
   }
-  async execute(command: string) {
+  async execute(
+    command: string,
+    options?: { cwd?: string | null; timeout?: number | null },
+  ) {
+    const mounts: WorkspaceMount[] = [
+      { virtualPath: "/", name: "root", realPath: this.cwd },
+    ];
+    const cwd = resolveExecuteCwd(options?.cwd, mounts) ?? this.cwd;
     return runCommand(
       adaptCommandToShell(
-        translateVirtualPathsInCommand(
-          command,
-          [{ virtualPath: "/", name: "root", realPath: this.cwd }],
-          true,
-        ),
+        translateVirtualPathsInCommand(command, mounts, true),
       ),
-      this.cwd,
+      cwd,
       { real: [this.cwd], prefixes: ["/"] },
+      options?.timeout ?? null,
     );
   }
 }
@@ -1759,18 +2355,24 @@ class WorkspaceRootBackend extends CompositeBackend {
    * default backend serves stray paths from). The built-in `execute` tool calls
    * this once `isSandboxBackend` is satisfied via `id` + this method.
    */
-  async execute(command: string) {
+  async execute(
+    command: string,
+    options?: { cwd?: string | null; timeout?: number | null },
+  ) {
     const singleRoot =
       this.mounts.length === 1 && this.mounts[0].virtualPath === "/";
+    const cwd =
+      resolveExecuteCwd(options?.cwd, this.mounts) ?? this.mounts[0].realPath;
     return runCommand(
       adaptCommandToShell(
         translateVirtualPathsInCommand(command, this.mounts, singleRoot),
       ),
-      this.mounts[0].realPath,
+      cwd,
       {
         real: this.mounts.map((m) => m.realPath),
         prefixes: this.mounts.map((m) => m.virtualPath),
       },
+      options?.timeout ?? null,
     );
   }
 
@@ -1805,8 +2407,9 @@ class WorkspaceRootBackend extends CompositeBackend {
     path: string | null = "/",
     glob: string | null = null,
     maxCount: number | null = null,
+    regex: boolean = false,
   ): Promise<GrepResult> {
-    const result = await super.grep(pattern, path, glob, maxCount);
+    const result = await super.grep(pattern, path, glob, maxCount, regex);
     if (result.error) return result;
     const matches = this.dedupeByRealPath(result.matches ?? [], (m) =>
       String((m as { line_number?: number }).line_number ?? ""),
@@ -1919,6 +2522,375 @@ export function getWorkspaceLayout(override?: string): WorkspaceLayout {
   return { mounts, singleRoot: false };
 }
 
+// Kiro's A4 directory exclusion list (bundle @176926-176955), plus our `tmp`.
+const FOLDED_TREE_DIRS = new Set([
+  ".git",
+  ".svn",
+  ".vscode",
+  ".idea",
+  ".vs",
+  "venv",
+  ".venv",
+  "env",
+  ".env",
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  "out",
+  "bin",
+  ".pytest_cache",
+  ".vscode-test",
+  ".continue",
+  "__pycache__",
+  "site-packages",
+  ".gradle",
+  ".mvn",
+  ".cache",
+  "gems",
+  "vendor",
+  ".next",
+  ".kiro",
+  ".micat", // our own config/steering dir (Kiro excludes .kiro the same way)
+  "tmp", // scratch/offload logs: noise in the tree and constant watcher churn
+]);
+
+// Kiro's k4 file glob list (bundle @176847-176925), applied via fe3's
+// endsWith check. Files matching these are not added to the tree at all.
+const TREE_IGNORED_FILE_SUFFIXES = [
+  ".ds_store",
+  "-lock.json",
+  ".lock",
+  ".log",
+  ".ttf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".mp4",
+  ".svg",
+  ".ico",
+  ".pdf",
+  ".zip",
+  ".gz",
+  ".tar",
+  ".dmg",
+  ".tgz",
+  ".rar",
+  ".7z",
+  ".exe",
+  ".dll",
+  ".obj",
+  ".o",
+  ".o.d",
+  ".a",
+  ".lib",
+  ".so",
+  ".dylib",
+  ".ncb",
+  ".sdf",
+  ".woff",
+  ".woff2",
+  ".eot",
+  ".cur",
+  ".avi",
+  ".mpg",
+  ".mpeg",
+  ".mov",
+  ".mp3",
+  ".mkv",
+  ".webm",
+  ".jar",
+  ".onnx",
+  ".parquet",
+  ".pqt",
+  ".wav",
+  ".webp",
+  ".db",
+  ".sqlite",
+  ".wasm",
+  ".plist",
+  ".profraw",
+  ".gcda",
+  ".gcno",
+  "go.sum",
+  ".env",
+  ".gitignore",
+  ".gitkeep",
+  ".continueignore",
+  ".kiroignore",
+  ".cursorignore",
+  "config.json",
+  ".csv",
+  ".uasset",
+  ".pdb",
+  ".bin",
+  ".chat",
+  ".swp",
+  ".pag",
+  ".jsonl",
+  ".eslintcache",
+  ".ts.map",
+  ".js.map",
+  ".d.ts",
+];
+const treeFileIgnored = (name: string): boolean => {
+  const lower = name.toLowerCase();
+  return TREE_IGNORED_FILE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+};
+
+const TREE_MAX_ENTRIES = 500;
+// Kiro's FileTreeSerializer constants (bundle @176978-176981, @176511):
+const TREE_LARGE_DIR = 50; // >= 50 children -> list only first 30 + <summary>
+const TREE_LARGE_SHOW = 30;
+const TREE_MAX_CHARS = 8000;
+
+/**
+ * Kiro-style: directories containing currently open editor files are always
+ * expanded (ve3({ paths: [...expandedPaths, ...openedFiles] })). Returns the
+ * set of all ancestor directories of open files, keyed by fsPath.
+ */
+export function openFileAncestorDirs(rootPath: string): Set<string> {
+  const dirs = new Set<string>();
+  const root = path.resolve(rootPath);
+  const editors = [
+    ...vscode.window.visibleTextEditors.map((e) => e.document.uri),
+    ...vscode.window.tabGroups.all
+      .flatMap((g) => g.tabs)
+      .map((t) =>
+        t.input instanceof vscode.TabInputText ? t.input.uri : undefined,
+      ),
+  ].filter((uri): uri is vscode.Uri => !!uri && uri.scheme === "file");
+  for (const uri of editors) {
+    const filePath = path.resolve(uri.fsPath);
+    if (filePath !== root && !filePath.startsWith(root + path.sep)) continue;
+    // Walk ancestors from the file's directory up to (but excluding) root.
+    // Every level is force-expanded so the file is visible in the tree.
+    let dir = path.dirname(filePath);
+    while (dir !== root && dir.startsWith(root + path.sep)) {
+      dirs.add(dir);
+      dir = path.dirname(dir);
+    }
+  }
+  return dirs;
+}
+
+interface TreeNode {
+  name: string;
+  fullPath: string;
+  isDir: boolean;
+  status: "expanded" | "closed";
+  children: TreeNode[];
+  summary?: string;
+}
+
+/**
+ * Kiro-style <session_start_snapshot> tree, following Kiro's FileTreeSerializer
+ * (bundle ve3/E5/Ie2/ke3) instead of a fixed-depth DFS:
+ *  1. Explicitly expand every directory on the open-file ancestor chain.
+ *  2. BFS-discover closed directories (fe3 filter) until `target` entries are
+ *     open — shallow dirs get budget first, deep dirs stay closed.
+ *  3. Large dirs (>= 50 children) list only the first 30 + a summary.
+ *  4. Final hard cap of 8000 chars, telling the model to use list_directory.
+ * Names are relative to the parent, so a 60-char Windows prefix isn't repeated
+ * on every node.
+ */
+function buildFileTreeSync(
+  rootPath: string,
+  forceExpand: Set<string> = new Set(),
+): string {
+  const root: TreeNode = {
+    name: ".",
+    fullPath: rootPath,
+    isDir: true,
+    status: "closed",
+    children: [],
+  };
+  let openCount = 0;
+
+  // Kiro's fe3: skip excluded dirs/hidden names during BFS discovery.
+  const expandable = (node: TreeNode): boolean => {
+    if (!node.isDir || node.status !== "closed") return false;
+    const n = node.name.toLowerCase();
+    if (n.startsWith(".")) return false;
+    return !FOLDED_TREE_DIRS.has(n);
+  };
+
+  // E5: list a directory, build child nodes, mark large ones with a summary.
+  const expandNode = (node: TreeNode, force = false): void => {
+    if (node.status === "expanded") return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(node.fullPath, { withFileTypes: true });
+    } catch {
+      node.status = "expanded";
+      return;
+    }
+    entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    // Kiro's fe3 file-glob exclusion: drop matching files from the tree
+    // entirely (they'd only burn the entry budget: locks, images, maps...).
+    const filtered = entries.filter(
+      (e) => e.isDirectory() || !treeFileIgnored(e.name),
+    );
+    const summarize = filtered.length >= TREE_LARGE_DIR && !force;
+    const shown = summarize ? filtered.slice(0, TREE_LARGE_SHOW) : filtered;
+    const hidden = filtered.length - shown.length;
+    node.children = shown.map((entry) => ({
+      name: entry.name,
+      fullPath: path.join(node.fullPath, entry.name),
+      isDir: entry.isDirectory(),
+      status: "closed",
+      children: [],
+    }));
+    if (hidden > 0) {
+      node.summary = `${filtered.length} entries — first ${TREE_LARGE_SHOW} shown, ${hidden} more (use list_directory)`;
+    }
+    node.status = "expanded";
+    openCount += shown.length;
+  };
+
+  // O4/E5 for explicitly requested paths: walk each ancestor chain top-down,
+  // force-expanding every level so the open file is visible even if deep.
+  const expandPath = (dir: string): void => {
+    const rel = path.relative(rootPath, dir);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return;
+    let node = root;
+    if (node.status === "closed") expandNode(node, true);
+    for (const part of rel.split(path.sep).filter(Boolean)) {
+      const child = node.children.find((c) => c.isDir && c.name === part);
+      if (!child) break;
+      expandNode(child, true);
+      node = child;
+    }
+  };
+  for (const dir of forceExpand) {
+    expandPath(path.resolve(dir));
+  }
+
+  // The root is named "." - expandable() skips dot-names, so make sure the
+  // root skeleton is expanded before BFS (otherwise the tree stays empty).
+  expandNode(root, true);
+
+  // Ie2/ke3: BFS over the tree; expand the first eligible closed directory
+  // until the open-entry budget is exhausted (shallow dirs first).
+  for (let i = 0; i < TREE_MAX_ENTRIES && openCount < TREE_MAX_ENTRIES; i++) {
+    const queue: TreeNode[] = [root];
+    let target: TreeNode | undefined;
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      if (expandable(node)) {
+        target = node;
+        break;
+      }
+      queue.push(...node.children);
+    }
+    if (!target) break;
+    expandNode(target);
+  }
+
+  // be3: serialize the tree with relative names and indentation.
+  const lines: string[] = [];
+  const serialize = (node: TreeNode, indent: string): void => {
+    for (const child of node.children) {
+      if (!child.isDir) {
+        lines.push(`${indent}<file name='${child.name}' />`);
+      } else if (child.status === "expanded") {
+        lines.push(`${indent}<folder name='${child.name}'>`);
+        if (child.summary) {
+          lines.push(`${indent}  <summary>${child.summary}</summary>`);
+        }
+        serialize(child, indent + "  ");
+        lines.push(`${indent}</folder>`);
+      } else {
+        lines.push(`${indent}<folder name='${child.name}' closed />`);
+      }
+    }
+  };
+  lines.push(`<fileTree root='${rootPath}'>`, `<folder name='.'>`);
+  serialize(root, "  ");
+  lines.push("</folder>", "</fileTree>");
+  let tree = lines.join("\n");
+  // Kiro's final hard cap: 8000 chars, then tell the model to use tools.
+  if (tree.length > TREE_MAX_CHARS) {
+    tree =
+      tree.substring(0, TREE_MAX_CHARS) +
+      "\n... (truncated, use listDirectory to explore)";
+  }
+  return tree;
+}
+
+let cachedTree: { key: string; tree: string; at: number } | undefined;
+const treeWatchers = new Map<string, vscode.FileSystemWatcher>();
+
+/**
+ * A file created/deleted/renamed anywhere under the root invalidates the
+ * snapshot immediately - equivalent to Kiro regenerating the tree on every
+ * turn, but with zero cost when nothing changed. Tmp/scratch and .micat
+ * (steering/config) files are ignored - they aren't in the tree, so writes
+ * there shouldn't invalidate the snapshot.
+ */
+function ensureTreeWatcher(rootPath: string): void {
+  if (treeWatchers.has(rootPath)) return;
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(rootPath, "**/*"),
+  );
+  const invalidate = (uri: vscode.Uri) => {
+    const rel = path.relative(rootPath, uri.fsPath).split(path.sep);
+    if (rel.includes("tmp") || rel.includes(".micat")) return;
+    if (cachedTree?.key.startsWith(rootPath + "|")) cachedTree = undefined;
+  };
+  watcher.onDidCreate(invalidate);
+  watcher.onDidDelete(invalidate);
+  watcher.onDidChange(invalidate);
+  treeWatchers.set(rootPath, watcher);
+}
+
+/** Cache key includes the open-file expansion signature: switching files
+ *  changes the tree, so the cache must be invalidated. */
+function treeCacheKey(rootPath: string, forceExpand: Set<string>): string {
+  return `${rootPath}|${[...forceExpand].sort().join(",")}`;
+}
+
+/** Session-start snapshot: rebuilt on FS changes or editor switches. */
+function sessionFileTree(rootPath: string): string {
+  ensureTreeWatcher(rootPath);
+  const forceExpand = openFileAncestorDirs(rootPath);
+  const key = treeCacheKey(rootPath, forceExpand);
+  const now = Date.now();
+  if (cachedTree?.key === key && now - cachedTree.at < 10 * 60_000) {
+    return cachedTree.tree;
+  }
+  const tree = buildFileTreeSync(rootPath, forceExpand);
+  setSessionFileTreeCache(rootPath, tree, forceExpand);
+  return tree;
+}
+
+/** Shared with the GUI's async micatGetFileTree request path. */
+export function getCachedSessionFileTree(rootPath: string): string | undefined {
+  const forceExpand = openFileAncestorDirs(rootPath);
+  const key = treeCacheKey(rootPath, forceExpand);
+  if (cachedTree?.key === key && Date.now() - cachedTree.at < 10 * 60_000) {
+    return cachedTree.tree;
+  }
+  return undefined;
+}
+
+export function setSessionFileTreeCache(
+  rootPath: string,
+  tree: string,
+  forceExpand: Set<string> = openFileAncestorDirs(rootPath),
+): void {
+  ensureTreeWatcher(rootPath);
+  cachedTree = {
+    key: treeCacheKey(rootPath, forceExpand),
+    tree,
+    at: Date.now(),
+  };
+}
+
 /**
  * Workspace information handed to the model as CONTEXT rather than as a rule
  * in the system prompt.
@@ -1939,6 +2911,20 @@ export function buildWorkspaceContext(override?: string): string {
     "",
     ...platformCommandGuidelines(),
     "",
+    "<workspace_folder>",
+    ...mounts.map((m) => `- The workspace root is: ${m.realPath}`),
+    "- Create new files inside these folders and resolve relative paths against them.",
+    "</workspace_folder>",
+    "",
+    ...(mounts.length > 0
+      ? [
+          '<session_start_snapshot captured="session-start">',
+          "This file tree was captured when the session started. Folders marked 'closed' can be explored with the directory listing tools.",
+          sessionFileTree(mounts[0].realPath),
+          "</session_start_snapshot>",
+          "",
+        ]
+      : []),
     "<workspace_context>",
     singleRoot
       ? "Workspace directory (virtual-root-relative path):"
@@ -1948,8 +2934,8 @@ export function buildWorkspaceContext(override?: string): string {
     "",
     "<filesystem_capabilities>",
     "Absolute paths OUTSIDE the workspace directories listed above are fully",
-    "accessible with the filesystem tools (ls, read_file, glob, grep, write_file,",
-    "edit_file). When a tool call targets such a path, the user is simply asked",
+    "accessible with the filesystem tools (list_directory, read_file, file_search,",
+    "grep_search, fs_write, str_replace). When a tool call targets such a path, the user is simply asked",
     "to approve it — that approval is automatic on your side and requires no",
     "special handling. NEVER refuse an out-of-workspace path or claim the tools",
     "cannot reach it; just make the tool call.",
@@ -2174,7 +3160,7 @@ export function withApprovedPaths<T extends object>(
   },
 ): T {
   const unrestricted = new FilesystemBackend({ virtualMode: false });
-  // Tools whose first (or second, for glob/grep) argument is a path.
+  // Backend methods whose first (or second, for glob/grep) argument is a path.
   const pathArgIndex: Record<string, number> = {
     read: 0,
     ls: 0,
@@ -2183,6 +3169,18 @@ export function withApprovedPaths<T extends object>(
     delete: 0,
     glob: 1,
     grep: 1,
+  };
+  // The permission engine is keyed by the Kiro tool name; translate the backend
+  // method name before calling `decide`.
+  const backendMethodToTool: Record<string, string> = {
+    read: "read_file",
+    ls: "list_directory",
+    write: "fs_write",
+    append: "fs_append",
+    edit: "str_replace",
+    delete: "delete_file",
+    glob: "file_search",
+    grep: "grep_search",
   };
 
   return new Proxy(backend, {
@@ -2209,7 +3207,10 @@ export function withApprovedPaths<T extends object>(
         return async (...args: unknown[]) => {
           const pathArg = args[pathArgIndex[prop]];
           if (typeof pathArg === "string" && pathArg.trim()) {
-            const action = opts.decide(prop, pathArg);
+            const action = opts.decide(
+              backendMethodToTool[prop] ?? prop,
+              pathArg,
+            );
             if (action === "deny") {
               throw new Error(
                 `Path '${pathArg}' is denied by the DeepAgent permission ` +

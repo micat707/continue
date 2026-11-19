@@ -240,18 +240,20 @@ export class PermissionsPanel {
 
     const TOOLS = [
       { tool:"read_file", desc:"读取文件" },
-      { tool:"write_file", desc:"新建/修改普通文件" },
-      { tool:"edit_file", desc:"编辑文件" },
+      { tool:"read_files", desc:"批量读取多个文件" },
+      { tool:"fs_write", desc:"新建/修改普通文件" },
+      { tool:"fs_append", desc:"追加内容到已有文件" },
+      { tool:"str_replace", desc:"编辑文件" },
       { tool:"delete_file", desc:"删除文件/文件夹" },
-      { tool:"delete", desc:"删除文件/文件夹" },
-      { tool:"ls", desc:"列目录" },
-      { tool:"glob", desc:"搜索文件" },
-      { tool:"grep", desc:"搜索内容" },
-      { tool:"execute", desc:"执行命令（任意 shell，不受路径约束）" },
+      { tool:"list_directory", desc:"列目录" },
+      { tool:"file_search", desc:"搜索文件" },
+      { tool:"grep_search", desc:"搜索内容" },
+      { tool:"execute_pwsh", desc:"执行命令（任意 shell，不受路径约束）" },
+      { tool:"control_pwsh_process", desc:"后台进程管理" },
     ];
-    const FILE_TOOLS = ["read_file","write_file","edit_file","delete_file","delete"];
+    const FILE_TOOLS = ["read_file","read_files","fs_write","fs_append","str_replace","delete_file"];
     // Hard red line: these tools can NEVER be "allow" in ANY scope.
-    const NO_ALLOW_TOOLS = ["execute"];
+    const NO_ALLOW_TOOLS = ["execute_pwsh"];
 
     function clone(o){ return JSON.parse(JSON.stringify(o)); }
 

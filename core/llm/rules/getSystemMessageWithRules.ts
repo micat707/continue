@@ -136,7 +136,14 @@ const isFileInDirectory = (
  * Checks if a rule is a root-level rule (.continue directory or no file path)
  */
 const isRootLevelRule = (rule: RuleWithSource): boolean => {
-  return !rule.sourceFile || rule.sourceFile.includes(".continue/"); // sourceFile path is absolute - hence we need to check for it in between
+  // MicatCode steering files live in .micat/ directories - they must be
+  // treated as root-level so their globs match files across the whole
+  // workspace instead of being restricted to the .micat/steering directory.
+  return (
+    !rule.sourceFile ||
+    rule.sourceFile.includes(".continue/") ||
+    rule.sourceFile.includes(".micat/")
+  );
 };
 
 /**

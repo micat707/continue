@@ -118,16 +118,30 @@ export function CommandOutcomeCard({ payload }: CommandOutcomeCardProps) {
   // completion event has flipped the live card in place.
   const viewText = isLive ? live.text : output;
   const effectiveRunning = isLive && !live.done;
-  const viewFailed = effectiveRunning ? false : live.exitCode !== 0;
+  // `exitCode === null` means UNKNOWN, not failed: the command timed out, was
+  // interrupted, or the terminal never reported an exit status (this fork's
+  // shell integration doesn't always fire the end event). Only an EXPLICIT
+  // non-zero code is a failure — painting "unknown" red made successful
+  // builds (BUILD SUCCESS in the terminal) show a red status icon.
+  const exitCode = live.exitCode;
+  const viewFailed = effectiveRunning
+    ? false
+    : exitCode !== null && exitCode !== 0;
+  // Unknown exit status → amber "pending" badge, distinct from red "failed".
+  const viewUnknown = !effectiveRunning && exitCode === null;
   const statusClass = effectiveRunning
     ? "agent-icon-running"
     : viewFailed
       ? "agent-icon-rejected"
-      : "agent-icon-accepted";
+      : viewUnknown
+        ? "agent-icon-pending"
+        : "agent-icon-accepted";
 
   return (
     <div
-      className={`agent-outcome${effectiveRunning ? "agent-outcome-running" : ""}`}
+      className={`agent-outcome agent-outcome-command${
+        effectiveRunning ? "agent-outcome-running" : ""
+      }`}
     >
       <div
         className="agent-outcome-summary cursor-pointer"
@@ -142,6 +156,18 @@ export function CommandOutcomeCard({ payload }: CommandOutcomeCardProps) {
           />
         </span>
         <span className="tool-call-title">Run Command</span>
+        {/* The conclusion belongs on the card itself — otherwise the user has
+            to expand the card and scroll to the very bottom of the output to
+            find out whether the command succeeded. */}
+        {!effectiveRunning && (
+          <span className={`kiro-command-status ${statusClass}`}>
+            {viewFailed
+              ? `✗ 失败 (exit ${exitCode})`
+              : viewUnknown
+                ? "⚠ 状态未知"
+                : "✓ 成功"}
+          </span>
+        )}
         {cwd && (
           <span
             className="kiro-command-cwd"
@@ -186,12 +212,20 @@ export function CommandOutcomeCard({ payload }: CommandOutcomeCardProps) {
               </div>
             </>
           ) : (
-            <pre
-              className="kiro-terminal-content"
-              data-failed={viewFailed ? "true" : "false"}
-            >
-              {viewText.length > 0 ? viewText : "（无输出）"}
-            </pre>
+            <>
+              <pre
+                className="kiro-terminal-content"
+                data-failed={viewFailed ? "true" : "false"}
+              >
+                {viewText.length > 0 ? viewText : "（无输出）"}
+              </pre>
+              {viewUnknown && (
+                <div className="kiro-running-hint">
+                  退出码未知（命令超时、被中断，或终端未回传退出码）——
+                  状态未知不等于失败， 请点右上角终端图标查看命令的真实结局。
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

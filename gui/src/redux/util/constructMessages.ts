@@ -41,6 +41,12 @@ export function constructMessages(
   availableRules: RuleWithSource[],
   rulePolicies: RulePolicies,
   useSystemToolsFramework?: SystemMessageToolsFramework,
+  /** Kiro-style system-level environment blocks (<system_information>, <session_start_snapshot>, etc.) */
+  environmentContext?: string,
+  /** Names of currently open editor files, rendered into the last user message's <EnvironmentContext> */
+  openEditorFiles?: string[],
+  /** Path of the active editor file (name-only entry when no content item exists) */
+  activeEditorFileName?: string,
 ): {
   messages: ChatMessage[];
   appliedRules: RuleMetadata[];
@@ -62,6 +68,14 @@ export function constructMessages(
 
   const historyCopy = [...filteredHistory];
 
+  // Kiro sends environment context (open editor files, active editor file)
+  // only on the current (last) user message - earlier turns keep their
+  // original rendering.
+  const lastUserHistoryIdx = findLastIndex(
+    historyCopy,
+    (item) => item.message.role === "user",
+  );
+
   const msgs: MessageWithContextItems[] = [];
   let appliedRuleIndex = -1;
   let index = -1;
@@ -81,7 +95,18 @@ export function constructMessages(
       // Gather context items for user messages
       let content = normalizeToMessageParts(item.message);
 
-      const ctxItemParts = item.contextItems
+      // Kiro-style: the auto-injected "Active file" item is moved into an
+      // <EnvironmentContext> block appended AFTER the user text (last user
+      // message only); other context items stay prepended code blocks.
+      const isLastUserMessage = index === lastUserHistoryIdx;
+      const activeFileItems = isLastUserMessage
+        ? item.contextItems.filter((c) => c.name?.startsWith("Active file"))
+        : [];
+      const normalItems = item.contextItems.filter(
+        (c) => !activeFileItems.includes(c),
+      );
+
+      const ctxItemParts = normalItems
         .map((ctxItem) => {
           return {
             type: "text",
@@ -91,6 +116,21 @@ export function constructMessages(
         .filter((part) => !!part.text.trim());
 
       content = [...ctxItemParts, ...content];
+
+      const envSuffix = isLastUserMessage
+        ? buildUserEnvironmentContext(
+            activeFileItems,
+            openEditorFiles ?? [],
+            activeEditorFileName,
+          )
+        : "";
+      if (envSuffix) {
+        content = [
+          ...content,
+          { type: "text", text: envSuffix } as TextMessagePart,
+        ];
+      }
+
       msgs.push({
         ctxItems: item.contextItems,
         message: {
@@ -196,19 +236,32 @@ export function constructMessages(
     .map((item) => item.ctxItems)
     .flat();
 
-  const { systemMessage, appliedRules } = getSystemMessageWithRules({
-    baseSystemMessage,
-    availableRules,
-    userMessage: lastUserOrToolMsg,
-    contextItems: rulesContextItems,
-    rulePolicies,
-  });
+  // Kiro-style rules injection (mirrors kiro_session.log): rules are NOT
+  // appended to the system prompt. Instead they are delivered as the first
+  // conversation turn - a user message carrying the wrapped rule blocks,
+  // followed by a synthetic assistant acknowledgement - and only then does
+  // the real user message follow.
+  const { systemMessage: rulesMessage, appliedRules } =
+    getSystemMessageWithRules({
+      baseSystemMessage: undefined,
+      availableRules,
+      userMessage: lastUserOrToolMsg,
+      contextItems: rulesContextItems,
+      rulePolicies,
+    });
 
-  // Append conversation summary to system message if it exists
-  let finalSystemMessage = systemMessage;
+  // The base system prompt stays a proper system message; Kiro-style
+  // environment blocks (<system_information>, <session_start_snapshot>, ...)
+  // are appended to it, and the conversation summary comes last.
+  let finalSystemMessage = baseSystemMessage ?? "";
+  if (environmentContext?.trim()) {
+    finalSystemMessage = finalSystemMessage
+      ? `${finalSystemMessage}\n\n${environmentContext}`
+      : environmentContext;
+  }
   if (summaryContent) {
-    finalSystemMessage = systemMessage
-      ? `${systemMessage}\n\nPrevious conversation summary:\n\n ${summaryContent}`
+    finalSystemMessage = finalSystemMessage
+      ? `${finalSystemMessage}\n\nPrevious conversation summary:\n\n ${summaryContent}`
       : `Previous conversation summary:\n\n ${summaryContent}`;
   }
 
@@ -222,6 +275,28 @@ export function constructMessages(
     });
   }
 
+  if (rulesMessage.trim()) {
+    const insertAt = finalSystemMessage.trim() ? 1 : 0;
+    msgs.splice(
+      insertAt,
+      0,
+      {
+        ctxItems: [],
+        message: {
+          role: "user",
+          content: rulesMessage,
+        },
+      },
+      {
+        ctxItems: [],
+        message: {
+          role: "assistant",
+          content: "I will follow these instructions.",
+        },
+      },
+    );
+  }
+
   const messages = msgs
     .map((m) => m.message)
     .map((message) => sanitizeMessageContent(message));
@@ -231,6 +306,71 @@ export function constructMessages(
     appliedRules,
     appliedRuleIndex,
   };
+}
+
+/** file:///d%3A/a/b.ts -> d:/a/b.ts ; POSIX paths keep their leading slash */
+function uriToDisplayPath(uri: string): string {
+  if (!uri.startsWith("file://")) {
+    return uri;
+  }
+  let p = decodeURIComponent(uri.replace(/^file:\/\//, ""));
+  // Windows file URIs keep a leading slash before the drive letter (/d:/...)
+  if (/^\/[a-zA-Z]%3A\//.test(p) || /^\/[a-zA-Z]:\//.test(p)) {
+    p = p.replace(/^\//, "");
+  }
+  return p;
+}
+
+/**
+ * Builds the Kiro-style <EnvironmentContext> block appended to the last user
+ * message (mirrors Kiro's currentMessage EnvironmentContext): open editor
+ * file names plus the active editor file (name + content).
+ */
+function buildUserEnvironmentContext(
+  activeFileItems: ContextItemWithId[],
+  openEditorFiles: string[],
+  activeEditorFileName?: string,
+): string {
+  const sections: string[] = [];
+
+  if (openEditorFiles.length > 0) {
+    const files = openEditorFiles
+      .map((f) => `<file name="${uriToDisplayPath(f)}" />`)
+      .join("\n");
+    sections.push(`<OPEN-EDITOR-FILES>\n${files}\n</OPEN-EDITOR-FILES>`);
+  }
+
+  for (const item of activeFileItems) {
+    const fileName = item.uri?.value ?? item.name ?? "unknown";
+    const raw =
+      typeof item.content === "string"
+        ? item.content
+        : contextItemContentToText(item.content);
+    // Keep only the code block from the provider content (drop its prefix)
+    const codeBlockIdx = raw.indexOf("```");
+    const body = codeBlockIdx >= 0 ? raw.slice(codeBlockIdx) : raw;
+    sections.push(
+      `<ACTIVE-EDITOR-FILE>\n<file name="${uriToDisplayPath(fileName)}" />\n\n${body}\n</ACTIVE-EDITOR-FILE>`,
+    );
+  }
+
+  // Agent/DeepAgent modes don't auto-inject the current file's content, but
+  // Kiro still lists the active editor file NAME in EnvironmentContext.
+  if (activeFileItems.length === 0 && activeEditorFileName) {
+    sections.push(
+      `<ACTIVE-EDITOR-FILE>\n<file name="${uriToDisplayPath(activeEditorFileName)}" />\n</ACTIVE-EDITOR-FILE>`,
+    );
+  }
+
+  if (sections.length === 0) {
+    return "";
+  }
+
+  return `<EnvironmentContext>
+This information is provided as context about the user environment. Only consider it if it's relevant to the user request; ignore it otherwise.
+
+${sections.join("\n\n")}
+</EnvironmentContext>`;
 }
 
 /**

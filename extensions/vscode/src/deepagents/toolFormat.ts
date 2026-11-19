@@ -50,16 +50,34 @@ export function truncateForCard(s: string, max: number): string {
         // TAIL (BUILD SUCCESS/FAILURE, the final error, the summary table), and
         // omit the noisy middle. Other tools keep the tail only.
         if (parsed.exitCode !== undefined) {
-          const headKeep = output.slice(0, 400);
-          const tailKeep = output.slice(-(max - 60));
-          const headNL = headKeep.lastIndexOf("\n");
-          const tailNL = tailKeep.indexOf("\n");
-          const head = headNL >= 0 ? headKeep.slice(headNL + 1) : headKeep;
-          const tail = tailNL >= 0 ? tailKeep.slice(tailNL + 1) : tailKeep;
-          const omitted = output.length - head.length - tail.length;
-          parsed.output =
-            `${head}\n\n…（中间约 ${omitted} 字符已省略，完整输出见终端）…\n\n` +
-            tail;
+          // Kiro-style Run Command truncation: keep the FIRST few lines (the
+          // command's context) and the LAST few lines (BUILD SUCCESS/FAILURE,
+          // the final error, the summary) and collapse the noisy middle — so
+          // the card shows the command's conclusion WITHOUT the user having to
+          // scroll through a thousand lines.
+          //
+          // Note: slicing by CHARACTERS and then trimming to the last newline
+          // (the old approach) kept only ONE arbitrary line near the cut
+          // point as the "head", and dropped the first lines of the "tail".
+          const HEAD_LINES = 6;
+          const TAIL_LINES = 12;
+          const lines = output.split(/\r?\n/);
+          if (lines.length > HEAD_LINES + TAIL_LINES + 1) {
+            const omitted = lines.length - HEAD_LINES - TAIL_LINES;
+            const head = lines.slice(0, HEAD_LINES).join("\n");
+            let tail = lines.slice(-TAIL_LINES).join("\n");
+            // Respect the character budget: if head+tail don't fit, cut the
+            // tail from the FRONT (its end carries the conclusion).
+            const overhead = s.length - output.length;
+            const budget = Math.max(0, max - overhead);
+            const room = budget - head.length - 160;
+            if (room > 0 && tail.length > room) {
+              tail = tail.slice(tail.length - room);
+            }
+            parsed.output =
+              `${head}\n\n…（中间 ${omitted} 行已省略，完整输出见终端）…\n\n` +
+              tail;
+          }
         } else {
           // Budget for the output field: everything else (keys, exitCode, …)
           // stays intact, so subtract the non-output overhead from `max`.
@@ -157,13 +175,26 @@ export function formatExecuteOutput(raw: unknown): string {
 
   const str = formatToolOutput(raw);
   if (typeof str !== "string") return str;
-  const m = str.match(
-    /\[Command (?:succeeded|failed) with exit code (-?\d+)\]\s*$/,
+  // deepagents appends its OWN trailer AFTER the status line whenever the
+  // output was truncated ("[Output was truncated due to size limits]"), so the
+  // status line is NOT the last thing in the string. Strip that trailer first,
+  // otherwise the match fails and we silently fall back to exitCode: null
+  // (which is what made successful builds show "unknown exit code").
+  const truncated = /\[Output was truncated due to size limits\]/.test(str);
+  const cleaned = str.replace(
+    /\s*\[Output was truncated due to size limits\]\s*$/,
+    "",
+  );
+  const m = cleaned.match(
+    /\[Command (succeeded|failed)(?: with exit code (-?\d+))?\]\s*$/,
   );
   if (m) {
-    const code = Number(m[1]);
-    const output = str.slice(0, m.index).replace(/\s+$/, "");
-    return JSON.stringify({ output, exitCode: code, truncated: false });
+    // deepagents' trailer comes in two flavours: "[Command succeeded]" (no
+    // code — means exit 0) and "[Command failed with exit code N]".
+    const code =
+      m[2] !== undefined ? Number(m[2]) : m[1] === "succeeded" ? 0 : 1;
+    const output = cleaned.slice(0, m.index).replace(/\s+$/, "");
+    return JSON.stringify({ output, exitCode: code, truncated });
   }
   // No recognizable status line — still wrap verbatim so the card keeps the
   // TAIL (the command's conclusion) rather than head-truncating it.
@@ -252,9 +283,9 @@ export function formatToolBlock(
   // be long; give it a bigger budget so more of the TAIL (BUILD SUCCESS/FAILURE,
   // the final error) survives truncateForCard's tail-keeping.
   const cap =
-    name === "edit_file"
+    name === "str_replace"
       ? Math.max(maxOutput, 6000)
-      : name === "execute"
+      : name === "execute_pwsh"
         ? Math.max(maxOutput, 4000)
         : maxOutput;
   const result = safeOutput

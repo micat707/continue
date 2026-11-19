@@ -44,32 +44,36 @@ export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
   trustedDirs: [],
   trustRules: [
     { tool: "read_file", action: "allow" },
-    { tool: "write_file", action: "allow" },
-    { tool: "edit_file", action: "allow" },
+    { tool: "read_files", action: "allow" },
+    { tool: "fs_write", action: "allow" },
+    { tool: "fs_append", action: "allow" },
+    { tool: "str_replace", action: "allow" },
     { tool: "delete_file", action: "ask" },
-    { tool: "ls", action: "allow" },
-    { tool: "glob", action: "allow" },
-    { tool: "grep", action: "allow" },
+    { tool: "list_directory", action: "allow" },
+    { tool: "file_search", action: "allow" },
+    { tool: "grep_search", action: "allow" },
   ],
   untrustRules: [
     { tool: "read_file", action: "ask" },
-    { tool: "write_file", action: "ask" },
-    { tool: "edit_file", action: "ask" },
+    { tool: "read_files", action: "ask" },
+    { tool: "fs_write", action: "ask" },
+    { tool: "fs_append", action: "ask" },
+    { tool: "str_replace", action: "ask" },
     { tool: "delete_file", action: "deny" },
-    { tool: "delete", action: "deny" },
-    { tool: "ls", action: "ask" },
-    { tool: "glob", action: "ask" },
-    { tool: "grep", action: "ask" },
+    { tool: "list_directory", action: "ask" },
+    { tool: "file_search", action: "ask" },
+    { tool: "grep_search", action: "ask" },
   ],
   executeAllowlist: [],
 };
 
 const FILE_TOOLS = new Set([
   "read_file",
-  "write_file",
-  "edit_file",
+  "read_files",
+  "fs_write",
+  "fs_append",
+  "str_replace",
   "delete_file",
-  "delete",
 ]);
 
 /**
@@ -81,7 +85,17 @@ const FILE_TOOLS = new Set([
  * (read_file…) and backend method names used by the withApprovedPaths proxy
  * (read, write…).
  */
-const READ_TOOLS = new Set(["read_file", "read", "ls", "glob", "grep"]);
+const READ_TOOLS = new Set([
+  "read_file",
+  "list_directory",
+  "file_search",
+  "grep_search",
+  // backend method names used by withApprovedPaths proxy
+  "read",
+  "ls",
+  "glob",
+  "grep",
+]);
 
 export function isReadTool(tool: string): boolean {
   return READ_TOOLS.has(tool);
@@ -376,7 +390,8 @@ export function resolveExecuteAction(
   protectedPrefixes: string[] = [],
 ): PermissionAction {
   const configured =
-    merged.untrustRules.get("execute") ?? merged.trustRules.get("execute");
+    merged.untrustRules.get("execute_pwsh") ??
+    merged.trustRules.get("execute_pwsh");
   if (configured === "deny") return "deny";
   if (
     command &&

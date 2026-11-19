@@ -28,6 +28,7 @@ import {
 } from "@langchain/core/messages";
 
 import { ContinueLLMAdapter } from "./ContinueLLMAdapter";
+import { createPruneFileContent } from "./filePruning";
 import {
   approvePath,
   buildWorkspaceContext,
@@ -44,6 +45,8 @@ import {
   createBackgroundProcessTools,
   setExecuteRunId,
 } from "./workspaceBackend";
+import { createWebFetchTools } from "./webFetchTool";
+import { createWebSearchTools } from "./webSearchTool";
 import * as path from "path";
 import {
   DEFAULT_PERMISSION_CONFIG,
@@ -57,7 +60,7 @@ import {
   type MergedRules,
 } from "./permissions";
 import { loadGlobalConfig, loadWorkspaceConfig } from "./permissionStore";
-import { cancelHitlDecision, requestHitlDecision } from "./hitlBridge";
+import { requestHitlDecision } from "./hitlBridge";
 import {
   formatExecuteOutput,
   formatToolBlock,
@@ -237,6 +240,16 @@ export function wrapWithDeepAgent(
     // The approval card only fires for "ask"; allow/deny never prompt.
     shouldInterrupt: (tool: string, req: any): boolean => {
       const args = req?.toolCall?.args;
+      // read_files carries an array of paths; interrupt if any of them needs
+      // approval (a non-string/unknown shape never stalls the run).
+      if (Array.isArray(args?.paths)) {
+        return args.paths.some(
+          (p: unknown) =>
+            typeof p === "string" &&
+            p.trim() &&
+            effectiveAction(tool, p) === "ask",
+        );
+      }
       const p = args?.file_path ?? args?.path;
       if (typeof p !== "string" || !p.trim()) return false;
       return effectiveAction(tool, p) === "ask";
@@ -247,13 +260,14 @@ export function wrapWithDeepAgent(
   // list run through the default virtual backend (inside-workspace only).
   const governedTools = [
     "read_file",
-    "write_file",
-    "edit_file",
+    "read_files",
+    "fs_write",
+    "fs_append",
+    "str_replace",
     "delete_file",
-    "delete",
-    "ls",
-    "glob",
-    "grep",
+    "list_directory",
+    "file_search",
+    "grep_search",
   ];
   const interruptOn: Record<string, unknown> = {};
   for (const tool of governedTools) {
@@ -268,7 +282,7 @@ export function wrapWithDeepAgent(
   // middleware (interruptOn) directly: a command pauses on the approval card
   // UNLESS it matches the user's executeAllowlist (then it auto-runs) or the
   // policy resolves to "deny" (then the backend proxy hard-blocks it).
-  interruptOn["execute"] = {
+  interruptOn["execute_pwsh"] = {
     allowedDecisions: ["approve", "reject"],
     when: (req: any) => {
       const command = req?.toolCall?.args?.command;
@@ -290,7 +304,7 @@ export function wrapWithDeepAgent(
   // background — same risk profile as `execute`, so it gets the same approval
   // gate (auto-run on allowlist, hard-block on deny, card on "ask"). "stop" /
   // output polling are harmless and never interrupt.
-  interruptOn["control_process"] = {
+  interruptOn["control_pwsh_process"] = {
     allowedDecisions: ["approve", "reject"],
     when: (req: any) => {
       if (req?.toolCall?.args?.action !== "start") return false;
@@ -318,8 +332,21 @@ export function wrapWithDeepAgent(
     );
   };
 
+  // Tools are now natively named with Kiro names (no alias middleware), so the
+  // batched HITL scan sees the real tool names directly — governedTools and the
+  // execute/control_process rules above already cover them.
+
   const agent = createDeepAgent({
     model: adapter,
+    // Kiro-style large-file pruning driven by the MAIN LLM: read_file's
+    // `explanation` becomes the pruning prompt's reasoning. The callback never
+    // throws, so a failed/irrelevant reply simply returns the full file.
+    pruneFileContent: createPruneFileContent(async (prompt, signal) => {
+      const response = await adapter.invoke([new HumanMessage(prompt)], {
+        signal,
+      });
+      return typeof response.content === "string" ? response.content : "";
+    }),
     systemPrompt:
       "You are a helpful coding assistant. Use the filesystem tools when needed.",
     // Factory runs on every agent turn, so workspace changes (including
@@ -333,7 +360,12 @@ export function wrapWithDeepAgent(
       }),
     // Background process management tools (control_process / get_process_output /
     // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-    tools: [...createBackgroundProcessTools()],
+    // web_search + web_fetch mirror Kiro's search-then-read web workflow.
+    tools: [
+      ...createBackgroundProcessTools(),
+      ...createWebFetchTools(),
+      ...createWebSearchTools(),
+    ],
     // MemorySaver keeps the thread state so a paused run can be resumed on the
     // same thread_id after the user's decision.
     checkpointer: new MemorySaver(),
@@ -478,11 +510,22 @@ export function wrapWithDeepAgent(
               // Track files the agent deliberately wrote/edited this session so
               // the GUI can list "changes this conversation made" after answering
               // (build artifacts from `execute` are intentionally excluded).
-              if (name === "write_file" || name === "edit_file") {
+              if (
+                name === "fs_write" ||
+                name === "fs_append" ||
+                name === "str_replace"
+              ) {
                 try {
-                  const obj = JSON.parse(input) as { filepath?: unknown };
+                  const obj = JSON.parse(input) as {
+                    filepath?: unknown;
+                    path?: unknown;
+                  };
                   const fp =
-                    typeof obj.filepath === "string" ? obj.filepath : undefined;
+                    typeof obj.filepath === "string"
+                      ? obj.filepath
+                      : typeof obj.path === "string"
+                        ? obj.path
+                        : undefined;
                   if (fp) {
                     const root =
                       rootOverride ??
@@ -503,7 +546,7 @@ export function wrapWithDeepAgent(
               // event (keyed by a fresh runId), so we never re-emit pending
               // blocks and the GUI has nothing to dedupe. When `call.output`
               // resolves below, the completed block replaces this card.
-              if (name === "execute") {
+              if (name === "execute_pwsh") {
                 const runId = uuidv4();
                 setExecuteRunId(runId);
                 queue.push({
@@ -522,7 +565,7 @@ export function wrapWithDeepAgent(
                 // the correct green/red status — deepagents' own string output
                 // would lose the exit code.
                 output =
-                  name === "execute"
+                  name === "execute_pwsh"
                     ? formatExecuteOutput(await call.output)
                     : formatToolOutput(await call.output);
               } catch (err) {
@@ -533,7 +576,15 @@ export function wrapWithDeepAgent(
               toolCount += 1;
               queue.push({
                 kind: "text",
-                text: formatToolBlock(name, input, output),
+                text: formatToolBlock(
+                  name,
+                  input,
+                  output,
+                  // The execute card keeps a head + a tail (the tail carries
+                  // BUILD SUCCESS/FAILURE), so it needs a bigger budget than
+                  // the 2000-char default.
+                  name === "execute_pwsh" ? 4000 : undefined,
+                ),
               });
             } catch {
               // ignore individual tool-event failures
@@ -553,12 +604,9 @@ export function wrapWithDeepAgent(
       return interrupted;
     };
 
-    // While awaiting the user's HITL decision the generator is parked on a
-    // promise that does not observe the abort signal — a Stop press would
-    // otherwise hang forever. Reject the wait on abort so the turn winds down.
-    const onAbort = () =>
-      cancelHitlDecision("chat turn aborted by user during HITL wait");
-    _signal.addEventListener("abort", onAbort);
+    // Abort handling for the HITL wait is wired per-request inside
+    // requestHitlDecision(payload, _signal): pressing Stop rejects only this
+    // turn's pending approval, not approvals belonging to other chat sessions.
 
     // Run the agent loop in the BACKGROUND: it pumps every run's text/tools into
     // `queue`, pausing on HITL interrupts and resuming on the user's decision.
@@ -586,7 +634,7 @@ export function wrapWithDeepAgent(
           if (payload?.actionRequests) {
             for (const a of payload.actionRequests) {
               if (
-                a?.name === "execute" &&
+                a?.name === "execute_pwsh" &&
                 typeof a.args?.command === "string"
               ) {
                 a.args.command = translateVirtualPathsInCommand(
@@ -597,7 +645,7 @@ export function wrapWithDeepAgent(
               }
             }
           }
-          const decisions = await requestHitlDecision(payload);
+          const decisions = await requestHitlDecision(payload, _signal);
           // Fold the user's decision into this session's permission memory so
           // the interrupt does not re-fire for the same path this chat:
           //  - approve a READ tool → read-only grant for the subtree (writes
@@ -654,7 +702,6 @@ export function wrapWithDeepAgent(
           "]",
       };
     } finally {
-      _signal.removeEventListener("abort", onAbort);
       setActiveTurnAbort(undefined);
     }
   };

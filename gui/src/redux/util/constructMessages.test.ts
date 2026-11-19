@@ -146,11 +146,13 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should only contain a system message (added by the function) and the valid user message
-    expect(messages.length).toBe(2);
+    // system + Kiro-style rules turn (user + assistant ack) + valid user message
+    expect(messages.length).toBe(4);
     expect(messages[0].role).toBe("system");
-    expect(messages[1].role).toBe("user");
-    expect(messages[1].content).toEqual([
+    expect(messages[1].role).toBe("user"); // rules turn
+    expect(messages[2].role).toBe("assistant"); // ack
+    expect(messages[3].role).toBe("user");
+    expect(messages[3].content).toEqual([
       { type: "text", text: "Valid user message" },
     ]);
     expect(messages.some((msg) => msg.content === "I should be ignored")).toBe(
@@ -182,11 +184,11 @@ describe("constructMessages", () => {
     );
 
     // Check that user message was converted to parts array with context items first
-    expect(messages.length).toBe(2); // System message + user message
-    expect(messages[1].role).toBe("user");
+    expect(messages.length).toBe(4); // system + rules turn + ack + user message
+    expect(messages[3].role).toBe("user");
 
     // Check content structure
-    const content = messages[1].content as any[];
+    const content = messages[3].content as any[];
     expect(content.length).toBe(3); // 2 context items + original message
     expect(content[0].text).toContain("Context content 1");
     expect(content[1].text).toContain("Context content 2");
@@ -213,10 +215,10 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have system message + thinking message
-    expect(messages.length).toBe(2);
-    expect(messages[1].role).toBe("thinking");
-    expect(messages[1].content).toBe("Thinking process...");
+    // Should have system message + rules turn + ack + thinking message
+    expect(messages.length).toBe(4);
+    expect(messages[3].role).toBe("thinking");
+    expect(messages[3].content).toBe("Thinking process...");
   });
 
   test("should inject assistant messages with no changes", () => {
@@ -239,10 +241,10 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have system message + assistant message
-    expect(messages.length).toBe(2);
-    expect(messages[1].role).toBe("assistant");
-    expect(messages[1].content).toBe("Assistant response");
+    // Should have system message + rules turn + ack + assistant message
+    expect(messages.length).toBe(4);
+    expect(messages[3].role).toBe("assistant");
+    expect(messages[3].content).toBe("Assistant response");
   });
 
   test("should follow assistant messages with tool calls by tool messages containing the tool output", () => {
@@ -301,11 +303,11 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have: system + user + assistant + tool messages
-    expect(messages.length).toBe(4);
-    expect(messages[2].role).toBe("assistant");
-    expect(messages[3].role).toBe("tool");
-    const toolMessage = messages[3] as ToolResultChatMessage;
+    // Should have: system + rules turn + ack + user + assistant + tool messages
+    expect(messages.length).toBe(6);
+    expect(messages[4].role).toBe("assistant");
+    expect(messages[5].role).toBe("tool");
+    const toolMessage = messages[5] as ToolResultChatMessage;
     expect(toolMessage.toolCallId).toBe("tool-call-1");
     expect(toolMessage.content).toContain("Search result content");
   });
@@ -356,10 +358,10 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have system + assistant + tool message with cancelled message
-    expect(messages.length).toBe(3);
-    expect(messages[2].role).toBe("tool");
-    const toolMessage = messages[2] as ToolResultChatMessage;
+    // Should have system + rules turn + ack + assistant + tool message with cancelled message
+    expect(messages.length).toBe(5);
+    expect(messages[4].role).toBe("tool");
+    const toolMessage = messages[4] as ToolResultChatMessage;
     expect(toolMessage.toolCallId).toBe("tool-call-1");
     expect(toolMessage.content).toBe(CANCELLED_TOOL_CALL_MESSAGE);
   });
@@ -410,10 +412,10 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have system + assistant + tool message with "No tool output"
-    expect(messages.length).toBe(3);
-    expect(messages[2].role).toBe("tool");
-    expect(messages[2].content).toBe(NO_TOOL_CALL_OUTPUT_MESSAGE);
+    // Should have system + rules turn + ack + assistant + tool message with "No tool output"
+    expect(messages.length).toBe(5);
+    expect(messages[4].role).toBe("tool");
+    expect(messages[4].content).toBe(NO_TOOL_CALL_OUTPUT_MESSAGE);
   });
 
   test("should start with system message using base message if provided", () => {
@@ -490,16 +492,16 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Should have: system + assistant + 2 tool messages
-    expect(messages.length).toBe(4);
-    expect(messages[1].role).toBe("assistant");
+    // Should have: system + rules turn + ack + assistant + 2 tool messages
+    expect(messages.length).toBe(6);
+    expect(messages[3].role).toBe("assistant");
 
     // First tool message should have output
-    expect(messages[2].role).toBe("tool");
-    expect(messages[3].role).toBe("tool");
+    expect(messages[4].role).toBe("tool");
+    expect(messages[5].role).toBe("tool");
 
-    const toolMessage1 = messages[2] as ToolResultChatMessage;
-    const toolMessage2 = messages[3] as ToolResultChatMessage;
+    const toolMessage1 = messages[4] as ToolResultChatMessage;
+    const toolMessage2 = messages[5] as ToolResultChatMessage;
     expect(toolMessage1.toolCallId).toBe("tool-call-1");
     expect(toolMessage1.content).toContain("Search result content");
 
@@ -536,10 +538,10 @@ describe("constructMessages", () => {
     );
 
     // Check the user message content structure
-    expect(messages.length).toBe(2);
-    expect(messages[1].role).toBe("user");
+    expect(messages.length).toBe(4); // system + rules turn + ack + user message
+    expect(messages[3].role).toBe("user");
 
-    const content = messages[1].content as any[];
+    const content = messages[3].content as any[];
     // Should have context item + original 2 parts
     expect(content.length).toBe(3);
     expect(content[0].type).toBe("text");
@@ -589,13 +591,17 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Verify context rule was applied in the system message
+    // Verify context rule was applied in the Kiro-style rules turn, not in the system message
     expect(appliedRules).toHaveLength(2);
     expect(appliedRules).toContainEqual(NORMAL_RULE);
     expect(appliedRules).toContainEqual(CONTEXT_RULE);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Base System Message");
-    expect(messages[0].content).toContain(CONTEXT_RULE.rule);
+    expect(messages[0].content).not.toContain(CONTEXT_RULE.rule);
+    expect(messages[1].role).toBe("user");
+    expect(messages[1].content).toContain(CONTEXT_RULE.rule);
+    expect(messages[2].role).toBe("assistant");
+    expect(messages[2].content).toBe("I will follow these instructions.");
   });
 
   test("system message should include rules triggered by tool output after the last user message", () => {
@@ -658,13 +664,17 @@ describe("constructMessages", () => {
       {},
     );
 
-    // Verify context rule was applied in the system message due to the tool output
+    // Verify context rule was applied in the rules turn due to the tool output
     expect(appliedRules).toHaveLength(2);
     expect(appliedRules).toContainEqual(NORMAL_RULE);
     expect(appliedRules).toContainEqual(CONTEXT_RULE);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Base System Message");
-    expect(messages[0].content).toContain(CONTEXT_RULE.rule);
+    expect(messages[0].content).not.toContain(CONTEXT_RULE.rule);
+    expect(messages[1].role).toBe("user");
+    expect(messages[1].content).toContain(CONTEXT_RULE.rule);
+    expect(messages[2].role).toBe("assistant");
+    expect(messages[2].content).toBe("I will follow these instructions.");
   });
 
   test("system message should only apply rules triggered by the last user message", () => {
@@ -711,6 +721,93 @@ describe("constructMessages", () => {
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Base System Message");
     expect(messages[0].content).not.toContain(LAST_MESSAGE_RULE.rule);
+    // Rules turn contains NORMAL_RULE but not LAST_MESSAGE_RULE
+    expect(messages[1].role).toBe("user");
+    expect(messages[1].content).toContain(NORMAL_RULE.rule);
+    expect(messages[1].content).not.toContain(LAST_MESSAGE_RULE.rule);
+  });
+
+  test("should append Kiro-style EnvironmentContext to the last user message", () => {
+    const activeFileItem: ContextItemWithId = {
+      id: { providerTitle: "file", itemId: "file:///d:/proj/Main.java" },
+      name: "Active file: Main.java",
+      description: "desc",
+      content:
+        "The following file is currently open. Don't reference it if it's not relevant to the user's message:\n\n```java\nclass Main {}\n```",
+      uri: { type: "file", value: "file:///d:/proj/Main.java" },
+    };
+
+    mockHistory = [
+      {
+        message: { role: "user", content: "帮我构建项目" } as UserChatMessage,
+        contextItems: [activeFileItem],
+      },
+    ];
+
+    const { messages } = constructMessages(
+      mockHistory,
+      "Base System Message",
+      [], // no rules -> no rules turn
+      {},
+      undefined,
+      "<system_information>\nOperating System: Windows\n</system_information>",
+      ["file:///d:/proj/Other.java"],
+    );
+
+    // System message includes the Kiro-style environment blocks
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain("Base System Message");
+    expect(messages[0].content).toContain("<system_information>");
+
+    // Last user message: EnvironmentContext appended after the user text
+    const userMsg = messages[messages.length - 1];
+    expect(userMsg.role).toBe("user");
+    const parts = userMsg.content as any[];
+    const lastPart = parts[parts.length - 1];
+    expect(lastPart.type).toBe("text");
+    expect(lastPart.text).toContain("<EnvironmentContext>");
+    expect(lastPart.text).toContain("<OPEN-EDITOR-FILES>");
+    expect(lastPart.text).toContain('<file name="d:/proj/Other.java" />');
+    expect(lastPart.text).toContain("<ACTIVE-EDITOR-FILE>");
+    expect(lastPart.text).toContain('<file name="d:/proj/Main.java" />');
+    expect(lastPart.text).toContain("class Main {}");
+    // Provider prefix text is dropped - only the code block is kept
+    expect(lastPart.text).not.toContain("Don't reference it");
+  });
+
+  test("should list ACTIVE-EDITOR-FILE by name when no content item exists", () => {
+    mockHistory = [
+      {
+        message: { role: "user", content: "hi" } as UserChatMessage,
+        contextItems: [],
+      },
+    ];
+
+    const { messages } = constructMessages(
+      mockHistory,
+      "Base System Message",
+      [], // no rules -> no rules turn
+      {},
+      undefined,
+      undefined,
+      ["file:///d%3A/yao/code/proj/src/App.java"],
+      "d:\\yao\\code\\proj\\src\\App.java",
+    );
+
+    const userMsg = messages[messages.length - 1];
+    expect(userMsg.role).toBe("user");
+    const parts = userMsg.content as any[];
+    const lastPart = parts[parts.length - 1];
+    expect(lastPart.text).toContain("<EnvironmentContext>");
+    // URI-encoded open files are shown as display paths
+    expect(lastPart.text).toContain(
+      '<file name="d:/yao/code/proj/src/App.java" />',
+    );
+    // Active editor file listed by name even without content
+    expect(lastPart.text).toContain("<ACTIVE-EDITOR-FILE>");
+    expect(lastPart.text).toContain(
+      '<file name="d:\\yao\\code\\proj\\src\\App.java" />',
+    );
   });
 
   // Tests for the specific block in lines 135-142 handling toolCallState.output
@@ -766,7 +863,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.content).toBe(CANCELLED_TOOL_CALL_MESSAGE);
       expect(toolMessage.content).not.toContain("This should be ignored");
@@ -829,7 +926,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.toolCallId).toBe("terminal-call-1");
       // Should contain content with status appended
@@ -894,7 +991,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.toolCallId).toBe("search-call-1");
       // Should use renderContextItems format (no status, double newlines between items)
@@ -950,7 +1047,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.toolCallId).toBe("search-call-1");
       expect(toolMessage.content).toBe(NO_TOOL_CALL_OUTPUT_MESSAGE);
@@ -996,7 +1093,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.toolCallId).toBe("search-call-1");
       expect(toolMessage.content).toBe(NO_TOOL_CALL_OUTPUT_MESSAGE);
@@ -1053,7 +1150,7 @@ describe("constructMessages", () => {
         {},
       );
 
-      const toolMessage = messages[2] as ToolResultChatMessage;
+      const toolMessage = messages[4] as ToolResultChatMessage;
       expect(toolMessage.role).toBe("tool");
       expect(toolMessage.toolCallId).toBe("terminal-call-1");
       // Should use cancelled message, not the output content

@@ -107,7 +107,18 @@
         "continue.deepAgent.execute.commandTimeout": {
           "type": "number",
           "default": 120000,
-          "description": "Maximum time (in milliseconds) a DeepAgent shell command may run in the live terminal before it is considered timed out. On timeout the command is NOT killed — it is left running in the visible terminal (you can interact with it there) and the agent receives the partial output plus a timeout note. Defaults to 120000 (2 minutes). Set higher for long builds/tests."
+          "description": "Maximum time (in milliseconds) a DeepAgent shell command may run WITHOUT producing any output before it is considered stalled. A command that keeps streaming output is not affected by this setting. On stall the command is TERMINATED (Ctrl+C) unless it is waiting for user input. Defaults to 120000 (2 minutes). The overall runtime is capped separately by 'continue.deepAgent.execute.maxCommandRuntime'."
+        },
+        "continue.deepAgent.execute.maxCommandRuntime": {
+          "type": "number",
+          "default": 600000,
+          "description": "Maximum TOTAL runtime (in milliseconds) for a DeepAgent shell command, regardless of whether it is still producing output. When exceeded, the command is TERMINATED (Ctrl+C) and the agent is told to try a different approach instead of re-running the same command. Defaults to 600000 (10 minutes). Set higher for legitimately long builds."
+        },
+        "continue.deepAgent.webSearch.tavilyApiKey": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Tavily API key used by the DeepAgent `web_search` tool (https://tavily.com). Leave empty to disable web search; the model will be told to configure this setting. Stored in machine scope so the key is not committed with workspace settings."
         },
         "continue.deepAgent.permissions": {
           "type": "object",
@@ -861,6 +872,7 @@
     "lint:fix": "eslint . --ext ts --fix",
     "test": "vitest run",
     "vitest": "vitest run",
+    "test:kiro-tools": "node scripts/test-kiro-tool-names.js && node scripts/test-tool-descriptions.js && node scripts/test-grep-regex.js && node scripts/test-file-pruning.js && node scripts/test-file-append.js && node scripts/test-command-warning.js",
     "write-build-timestamp": "node scripts/write-build-timestamp.js",
     "prepackage": "node scripts/prepackage.js",
     "package": "node scripts/package.js",

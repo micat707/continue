@@ -21,6 +21,7 @@ import { createDeepAgent, type DeepAgent } from "deepagents";
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 
 import { ContinueLLMAdapter } from "./ContinueLLMAdapter";
+import { createPruneFileContent } from "./filePruning";
 import {
   approvePath,
   buildWorkspaceContext,
@@ -33,6 +34,8 @@ import {
   withApprovedPaths,
   createBackgroundProcessTools,
 } from "./workspaceBackend";
+import { createWebFetchTools } from "./webFetchTool";
+import { createWebSearchTools } from "./webSearchTool";
 import {
   formatExecuteOutput,
   formatToolInput,
@@ -127,26 +130,30 @@ export class DeepAgentChatPanel {
     // path outside the workspace mounts. The run pauses and the webview shows an
     // Approve/Deny card; on resume it continues on the same thread. `when` reads
     // the live rootOverride because the arrow captures this instance.
+    const isOutside = (p: unknown): boolean =>
+      typeof p === "string" &&
+      p.length > 0 &&
+      classifyPath(p, this.rootOverride) === "outside" &&
+      !isPathApproved(this.approvedPaths, p);
     const outsideWorkspace = (req: any): boolean => {
       const args = req?.toolCall?.args;
+      // read_files carries an array of paths; interrupt if any is outside and
+      // unapproved. Unknown shapes never stall the run.
+      if (Array.isArray(args?.paths)) return args.paths.some(isOutside);
       const p = args?.file_path ?? args?.path;
       // Only interrupt when we can clearly see an out-of-workspace path; an
       // unrecognized request shape must NOT stall the run. A path the user
       // already approved this session is let through without re-prompting.
-      return (
-        typeof p === "string" &&
-        p.length > 0 &&
-        classifyPath(p, this.rootOverride) === "outside" &&
-        !isPathApproved(this.approvedPaths, p)
-      );
+      return isOutside(p);
     };
     // `delete` is included in case the tool is registered under that name.
     const hitlTools = [
       "read_file",
-      "write_file",
-      "edit_file",
+      "read_files",
+      "fs_write",
+      "fs_append",
+      "str_replace",
       "delete_file",
-      "delete",
     ];
     const interruptOn: Record<string, unknown> = {};
     for (const tool of hitlTools) {
@@ -164,7 +171,7 @@ export class DeepAgentChatPanel {
       loadWorkspaceConfig(),
       null,
     );
-    interruptOn["execute"] = {
+    interruptOn["execute_pwsh"] = {
       allowedDecisions: ["approve", "reject"],
       when: (req: any) => {
         const layout = getWorkspaceLayout(this.rootOverride);
@@ -181,7 +188,7 @@ export class DeepAgentChatPanel {
     // `control_process` "start" launches an arbitrary shell command in the
     // background — same risk profile as `execute`, so it gets the same approval
     // gate. "stop" / output polling never interrupt.
-    interruptOn["control_process"] = {
+    interruptOn["control_pwsh_process"] = {
       allowedDecisions: ["approve", "reject"],
       when: (req: any) => {
         if (req?.toolCall?.args?.action !== "start") return false;
@@ -197,8 +204,19 @@ export class DeepAgentChatPanel {
       },
     };
 
+    // Tools are natively Kiro-named now (no alias middleware); the batched HITL
+    // scan sees the real names, so hitlTools + the execute/control rules above
+    // cover every gated tool directly.
+
     this.agent = createDeepAgent({
       model: adapter,
+      // Kiro-style large-file pruning driven by the MAIN LLM (see DeepAgentLLM).
+      pruneFileContent: createPruneFileContent(async (prompt, signal) => {
+        const response = await adapter.invoke([new HumanMessage(prompt)], {
+          signal,
+        });
+        return typeof response.content === "string" ? response.content : "";
+      }),
       systemPrompt:
         "You are a helpful coding assistant. Use the filesystem tools when needed.",
       // Factory runs on every agent turn and reads the live workspace folders,
@@ -216,7 +234,12 @@ export class DeepAgentChatPanel {
         }),
       // Background process management tools (control_process / get_process_output /
       // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-      tools: [...createBackgroundProcessTools()],
+      // web_search + web_fetch mirror Kiro's search-then-read web workflow.
+      tools: [
+        ...createBackgroundProcessTools(),
+        ...createWebFetchTools(),
+        ...createWebSearchTools(),
+      ],
       checkpointer: new MemorySaver(),
       interruptOn,
     });
@@ -520,11 +543,16 @@ export class DeepAgentChatPanel {
         const name = call.name ?? "tool";
         const rawInput = await call.input;
         const input = formatToolInput(rawInput);
+        const inputObj = rawInput as Record<string, unknown> | undefined;
         const filePath =
-          rawInput &&
-          typeof rawInput === "object" &&
-          typeof (rawInput as Record<string, unknown>).file_path === "string"
-            ? ((rawInput as Record<string, unknown>).file_path as string)
+          rawInput && typeof rawInput === "object" && inputObj
+            ? typeof inputObj.path === "string"
+              ? inputObj.path
+              : typeof inputObj.file_path === "string"
+                ? inputObj.file_path
+                : typeof inputObj.targetFile === "string"
+                  ? inputObj.targetFile
+                  : ""
             : "";
         this.panel.webview.postMessage({
           type: "toolStart",
@@ -538,7 +566,7 @@ export class DeepAgentChatPanel {
         try {
           const raw = await call.output;
           output =
-            name === "execute"
+            name === "execute_pwsh"
               ? formatExecuteOutput(raw)
               : formatToolOutput(raw);
         } catch (err) {
@@ -551,7 +579,7 @@ export class DeepAgentChatPanel {
           name,
           filePath,
           output: truncate(output, 4000),
-          diff: name === "edit_file" ? extractUnifiedDiff(output) : "",
+          diff: name === "str_replace" ? extractUnifiedDiff(output) : "",
         });
       } catch {
         // ignore individual tool-event failures
@@ -867,7 +895,7 @@ export class DeepAgentChatPanel {
     }
 
     function addTool(name, filePath, input) {
-      if (name === "edit_file") return addEditCard(filePath);
+      if (name === "str_replace") return addEditCard(filePath);
       const wrap = el("div", "tool");
       const head = el("div", "tool-head");
       const dot = el("span", "dot");

@@ -97,6 +97,8 @@ export type ToIdeFromWebviewProtocol = ToIdeFromWebviewOrCoreProtocol & {
    */
   deepAgentInterruptResponse: [
     {
+      /** Matches the `requestId` of the originating `deepAgentInterrupt`. */
+      requestId: string;
       decisions: Array<{ id: string; type: "approve" | "reject" }>;
     },
     void,
@@ -196,6 +198,9 @@ export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
    */
   deepAgentInterrupt: [
     {
+      /** Unique id for this pending approval; echoed back by the GUI so the
+       * IDE can resolve the exact waiting request even across sessions. */
+      requestId: string;
       request: {
         actionRequests?: Array<{
           name?: string;

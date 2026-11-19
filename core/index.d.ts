@@ -1927,7 +1927,8 @@ export type RuleSource =
   | "colocated-markdown"
   | "json-systemMessage"
   | ".continuerules"
-  | "agentFile";
+  | "agentFile"
+  | "micat-steering";
 
 export interface RuleMetadata {
   name?: string;
