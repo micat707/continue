@@ -127,6 +127,10 @@
   .badge.dbg { background: var(--dbg); }
   .badge.raw { background: var(--raw); }
   .badge.err { background: var(--err); }
+  .entry > .head .inferred {
+    color: var(--raw); font-size: 10px; font-style: italic;
+    border: 1px dashed var(--raw); border-radius: 3px; padding: 0 4px;
+  }
   .entry > .head .time { color: var(--fg-dim); font-size: 11px; }
   .entry > .head .size { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
   .entry > .body { padding: 10px; display: none; }
@@ -634,6 +638,7 @@ function parse(text) {
   HEADER_RE.lastIndex = 0;
   const matches = [];
   while ((m = HEADER_RE.exec(text)) !== null) matches.push(m);
+  let lastSid = null; // most recent sid seen while scanning in log order
   for (let i = 0; i < matches.length; i++) {
     const mm = matches[i];
     const start = mm.index + mm[0].length;
@@ -642,12 +647,27 @@ function parse(text) {
     // RESPONSE-DEBUG is diagnostic metadata only (path / finishReason / char
     // counts) — not a model request or response, so skip it to reduce noise.
     if (mm[1] === "RESPONSE-DEBUG") continue;
-    const sid = mm[3] || "__NOSID__";
-    if (!sessions.has(sid)) sessions.set(sid, []);
-    sessions.get(sid).push({
+    // RAW-API-REQUEST / RAW-API-RESPONSE are logged at the wire layer, which
+    // has no chat-session id (see rawApiLogger.ts) — their headers carry no
+    // [sid=...]. They are emitted milliseconds after the adapter-level
+    // REQUEST-TO-MODEL of the SAME call, so attribute a sid-less entry to the
+    // most recently seen sid. `sidInferred` marks it as an approximation so the
+    // UI can make that explicit instead of mislabelling it a real session tag.
+    let sid = mm[3] || null;
+    let sidInferred = false;
+    if (!sid) {
+      sid = lastSid;
+      sidInferred = !!lastSid;
+    } else {
+      lastSid = sid;
+    }
+    const key = sid || "__NOSID__";
+    if (!sessions.has(key)) sessions.set(key, []);
+    sessions.get(key).push({
       section: mm[1],
       ts: mm[2],
-      sid: mm[3] || null,
+      sid: sid,
+      sidInferred,
       chars: parseInt(mm[4], 10),
       tokens: parseInt(mm[5], 10),
       body,
@@ -748,6 +768,7 @@ function renderSession(idx) {
       '<div class="entry">' +
       '<div class="head" onclick="this.parentNode.classList.toggle(\'open\')">' +
       '<span class="badge ' + bc + '">' + escapeHtml(e.section) + "</span>" +
+      (e.sidInferred ? '<span class="inferred" title="wire 层无 sid，按时间就近归属到上一个会话">≈sid</span>' : "") +
       '<span class="time">' + escapeHtml(e.ts.replace("T", " ").replace("Z", "")) + "</span>" +
       '<span class="size">' + e.chars + " chars · ≈" + e.tokens + " tok</span>" +
       "</div>" +

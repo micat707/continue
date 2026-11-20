@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JSON 格式化工具</title>
+<style>
+:root{
+  --bg:#0d1117;--panel:#161b22;--panel2:#1c2128;--border:#30363d;
+  --fg:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--ok:#3fb950;--err:#f85149;--warn:#d29922;
+  --str:#a5d6ff;--num:#f0883e;--key:#79c0ff;--bool:#d2a8ff;--null:#8b949e;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  font-size:13.5px;display:flex;flex-direction:column;height:100vh;}
+header{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;position:relative;}
+.dd{position:absolute;top:100%;left:16px;width:440px;max-height:320px;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px #0009;z-index:40;display:none;}
+.dd-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;}
+.dd-item:last-child{border-bottom:none;}
+.dd-item:hover{background:var(--panel2);}
+.dd-main{flex:1;min-width:0;}
+.dd-name{font-size:12.5px;font-weight:600;word-break:break-all;}
+.dd-meta{font-size:11px;color:var(--muted);}
+.dd-rm{padding:0 8px;font-size:14px;line-height:20px;border-radius:4px;background:transparent;flex-shrink:0;}
+.dd-empty{padding:14px;color:var(--muted);font-size:12px;text-align:center;}
+header h1{margin:0 0 8px;font-size:15px;font-weight:600;}
+header h1 .sub{font-size:11.5px;color:var(--muted);font-weight:400;margin-left:8px;}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);
+  padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12.5px;font-family:inherit;}
+button:hover{border-color:var(--accent);}
+button:active{transform:translateY(1px);}
+button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff;}
+button.primary:hover{background:#388bfd;}
+button:disabled{opacity:.45;cursor:not-allowed;}
+.chk{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;cursor:pointer;user-select:none;}
+.seg{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.seg button{border:none;border-radius:0;background:var(--panel2);}
+.seg button.on{background:#1f6feb33;color:var(--accent);}
+.mini{padding:2px 8px;font-size:11px;border-radius:5px;}
+select.mini{padding:2px 4px;font-size:11px;}
+input.mini{background:var(--panel2);color:var(--fg);border:1px solid var(--border);outline:none;}
+input.mini:focus{border-color:var(--accent);}
+input.mini::placeholder{color:var(--muted);}
+select{background:var(--panel2);color:var(--fg);border:1px solid var(--border);
+  padding:4px 6px;border-radius:6px;font-size:12px;font-family:inherit;}
+#stats{margin-left:auto;color:var(--muted);font-size:11.5px;white-space:nowrap;}
+main{flex:1;display:flex;min-height:0;}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0;}
+.pane+.pane{border-left:1px solid var(--border);}
+.pane-h{padding:6px 12px;font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.5px;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;
+  display:flex;align-items:center;gap:8px;}
+.pane-h .tag{color:var(--accent);text-transform:none;letter-spacing:0;}
+textarea{flex:1;width:100%;resize:none;border:none;outline:none;background:var(--bg);color:var(--fg);
+  padding:12px 14px;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:12.5px;line-height:1.55;tab-size:2;}
+.outwrap{flex:1;overflow:auto;min-height:0;position:relative;}
+pre.json{margin:0;padding:12px 14px;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+.json .key{color:var(--key);}
+.json .str{color:var(--str);}
+.json .num{color:var(--num);}
+.json .bool{color:var(--bool);}
+.json .null{color:var(--null);}
+.error{margin:10px 12px;padding:10px 12px;border:1px solid var(--err);border-radius:8px;
+  background:#f8514915;color:#ffb4ae;font-size:12.5px;white-space:pre-wrap;word-break:break-word;
+  font-family:"SFMono-Regular",Consolas,monospace;}
+.error b{color:var(--err);}
+.error .pos{display:block;margin-top:6px;color:var(--muted);}
+.error .ctx{display:block;margin-top:6px;color:var(--fg);background:#00000055;padding:6px 8px;border-radius:5px;}
+.error .mark{color:var(--err);font-weight:700;}
+.ok-hint{margin:10px 12px;padding:8px 12px;border:1px solid var(--ok);border-radius:8px;
+  background:#3fb95015;color:#7ee2a8;font-size:12.5px;}
+/* 树视图 */
+.tree{padding:10px 14px;font-family:"SFMono-Regular",Consolas,monospace;font-size:12.5px;line-height:1.6;}
+.tree details{margin-left:16px;}
+.tree summary{cursor:pointer;list-style:none;white-space:nowrap;}
+.tree summary::-webkit-details-marker{display:none;}
+.tree summary:before{content:"▸";color:var(--muted);display:inline-block;width:12px;transition:transform .1s;}
+.tree details[open]>summary:before{transform:rotate(90deg);}
+.tree .kv{margin-left:16px;white-space:pre-wrap;word-break:break-word;}
+.tree .cnt{color:var(--muted);}
+.tree .k{color:var(--key);}
+.tree .str{color:var(--str);}
+.tree .num{color:var(--num);}
+.tree .bool{color:var(--bool);}
+.tree .null{color:var(--null);}
+.copybtn{margin-left:6px;padding:0 6px;font-size:10px;line-height:16px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);cursor:pointer;opacity:0;vertical-align:middle;}
+.tree summary:hover .copybtn,.tree .kv:hover .copybtn{opacity:1;}
+.copybtn:hover{color:var(--accent);border-color:var(--accent);}
+.tree .hit{background:#d2992230;outline:1px solid var(--warn);border-radius:4px;}
+.tree .hit>.k{color:var(--warn);}
+.empty{color:var(--muted);padding:30px 14px;text-align:center;font-size:12.5px;}
+.dragover{outline:2px dashed var(--accent);outline-offset:-6px;background:#1f6feb11;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+@media(max-width:820px){main{flex-direction:column;}.pane+.pane{border-left:none;border-top:1px solid var(--border);}}
+</style>
+</head>
+<body>
+<header>
+  <h1>JSON 格式化工具<span class="sub">纯前端 · 数据不出本地 · 支持拖入文件</span></h1>
+  <div class="toolbar">
+    <button id="btnFormat" class="primary">格式化</button>
+    <button id="btnMinify">压缩</button>
+    <button id="btnCopy">复制</button>
+    <button id="btnDownload">下载 .json</button>
+    <button id="btnOpen">打开文件…</button>
+    <button id="btnRecent">最近文件 ▾</button>
+    <button id="btnSort">键排序</button>
+    <button id="btnClear">清空</button>
+    <label class="chk"><input type="checkbox" id="chkAuto" checked> 输入即格式化</label>
+    <span style="color:var(--muted);font-size:12px;">缩进</span>
+    <select id="indent">
+      <option value="2" selected>2 空格</option>
+      <option value="4">4 空格</option>
+      <option value="tab">Tab</option>
+      <option value="0">不换行</option>
+    </select>
+    <span class="seg"><button id="btnText" class="on">文本</button><button id="btnTree">树</button></span>
+    <span id="stats"></span>
+  </div>
+  <input type="file" id="fileInput" accept=".json,.txt,.log,application/json,text/plain" style="display:none">
+  <div id="ddRecent" class="dd"></div>
+</header>
+<main>
+  <section class="pane">
+    <div class="pane-h">输入 / 原始 JSON <span class="tag" id="inName"></span></div>
+    <textarea id="input" spellcheck="false" placeholder="在此粘贴 JSON，或把 .json 文件拖到本页任意位置…"></textarea>
+  </section>
+  <section class="pane">
+    <div class="pane-h">输出 <span class="tag" id="outMode"></span>
+      <span id="treeTools" style="display:none;margin-left:auto;gap:6px;align-items:center;">
+        <input type="text" id="treeSearch" class="mini" placeholder="搜索节点…" style="width:130px;">
+        <span id="treeHits" style="color:var(--warn);font-size:11px;min-width:44px;"></span>
+        <button id="btnExpand" class="mini">展开全部</button>
+        <button id="btnCollapse" class="mini">折叠全部</button>
+        <span style="color:var(--muted);font-size:11px;">层级</span>
+        <select id="treeLevel" class="mini">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="-1">全部</option>
+        </select>
+      </span>
+    </div>
+    <div class="outwrap" id="outwrap">
+      <div id="error" class="error" style="display:none"></div>
+      <div id="okHint" class="ok-hint" style="display:none"></div>
+      <pre id="output" class="json"></pre>
+      <div id="tree" class="tree" style="display:none"></div>
+      <div id="empty" class="empty">左侧输入 JSON 后自动格式化<br>支持格式化 / 压缩 / 树形折叠 / 语法高亮 / 错误定位</div>
+    </div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let VIEW='text';        // text | tree
+let SORTED=false;       // 键排序
+let CUR=null;           // 当前解析出的对象
+let CUR_RAW='';         // 当前格式化文本
+let TREE_LEVEL=1;       // 树视图展开层级：<0=全部，0=全折叠，n>0=展开到第 n 层
+let TREE_QUERY='';      // 树节点搜索关键字
+let TREE_HITS=0;        // 命中计数
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// 语法高亮（先转义再分词着色）
+function highlight(json){
+  const e=esc(json);
+  return e.replace(/("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,function(m){
+    let cls='num';
+    if(m.charAt(0)==='"'){ cls=/:$/.test(m)?'key':'str'; }
+    else if(m==='true'||m==='false'){ cls='bool'; }
+    else if(m==='null'){ cls='null'; }
+    return '<span class="'+cls+'">'+m+'</span>';
+  });
+}
+
+function indentUnit(){
+  const v=$('indent').value;
+  if(v==='tab')return '\t';
+  if(v==='0')return 0;
+  return parseInt(v,10);
+}
+
+// 统计：最大深度 + 节点数
+function measure(val,depth){
+  depth=depth||0;
+  let maxd=depth,nodes=1;
+  if(val&&typeof val==='object'){
+    const ks=Object.keys(val);
+    for(const k of ks){ const r=measure(val[k],depth+1); if(r.maxd>maxd)maxd=r.maxd; nodes+=r.nodes; }
+  }
+  return {maxd:maxd,nodes:nodes};
+}
+
+// 深拷贝并可选按键排序
+function sortDeep(val){
+  if(Array.isArray(val))return val.map(sortDeep);
+  if(val&&typeof val==='object'){
+    const o={};
+    Object.keys(val).sort().forEach(function(k){o[k]=sortDeep(val[k]);});
+    return o;
+  }
+  return val;
+}
+
+function setError(msg,raw,errPos){
+  $('error').style.display='';$('okHint').style.display='none';
+  $('output').style.display='none';$('tree').style.display='none';$('empty').style.display='none';
+  let html='<b>✗ JSON 解析失败</b>\n'+esc(msg);
+  if(errPos!=null&&errPos>=0&&raw){
+    const from=Math.max(0,errPos-40),to=Math.min(raw.length,errPos+40);
+    const before=raw.slice(from,errPos),at=raw.slice(errPos,errPos+1),after=raw.slice(errPos+1,to);
+    html+='<span class="pos">出错位置：第 '+errPos+' 个字符附近</span>';
+    html+='<span class="ctx">'+esc(before)+'<span class="mark">'+esc(at||'?')+'</span>'+esc(after)+'</span>';
+  }
+  $('error').innerHTML=html;
+}
+function clearMsgs(){$('error').style.display='none';$('okHint').style.display='none';}
+
+// 节点是否命中搜索（键名 或 叶子值 包含关键字，大小写不敏感）
+function nodeMatch(key,val){
+  if(!TREE_QUERY)return false;
+  const q=TREE_QUERY.toLowerCase();
+  if(key!=null&&String(key).toLowerCase().indexOf(q)>=0)return true;
+  if(val===null)return 'null'.indexOf(q)>=0;
+  if(typeof val==='string')return val.toLowerCase().indexOf(q)>=0;
+  if(typeof val==='number'||typeof val==='boolean')return String(val).toLowerCase().indexOf(q)>=0;
+  return false;
+}
+// 树视图构建；返回该子树是否含命中节点（用于自动展开祖先）
+function buildTree(key,val,container,depth){
+  depth=depth||0;
+  const selfHit=nodeMatch(key,val);
+  if(selfHit)TREE_HITS++;
+  if(val!==null&&typeof val==='object'){
+    const isArr=Array.isArray(val),n=isArr?val.length:Object.keys(val).length;
+    const det=document.createElement('details');
+    det._depth=depth;
+    const sum=document.createElement('summary');
+    sum.innerHTML=(key!==null?'<span class="k">'+esc(key)+'</span>: ':'')+
+      '<span class="cnt">'+(isArr?'['+n+']':'{'+n+'}')+'</span>';
+    addCopyBtn(sum,val);
+    if(selfHit)sum.classList.add('hit');
+    det.appendChild(sum);
+    const entries=isArr?val.map((v,i)=>[i,v]):Object.keys(val).map(k=>[k,val[k]]);
+    let childHit=false;
+    if(n===0){
+      const kv=document.createElement('div');kv.className='kv';
+      kv.innerHTML=(isArr?'<span class="cnt">空数组</span>':'<span class="cnt">空对象</span>');
+      det.appendChild(kv);
+    }else{
+      for(const [k,v] of entries){if(buildTree(k,v,det,depth+1))childHit=true;}
+    }
+    const sub=selfHit||childHit;
+    det.open=TREE_QUERY?sub:((TREE_LEVEL<0)?true:(depth<TREE_LEVEL));
+    container.appendChild(det);
+    return sub;
+  }else{
+    const div=document.createElement('div');div.className='kv';
+    let vs;
+    if(typeof val==='string')vs='<span class="str">"'+esc(val)+'"</span>';
+    else if(typeof val==='number')vs='<span class="num">'+val+'</span>';
+    else if(typeof val==='boolean')vs='<span class="bool">'+val+'</span>';
+    else vs='<span class="null">null</span>';
+    div.innerHTML=(key!==null?'<span class="k">'+esc(key)+'</span>: ':'')+vs;
+    if(selfHit)div.classList.add('hit');
+    addCopyBtn(div,val);
+    container.appendChild(div);
+    return selfHit;
+  }
+}
+
+function render(){
+  clearMsgs();
+  $('empty').style.display='none';
+  const tt=$('treeTools');
+  if(VIEW==='tree'){
+    $('output').style.display='none';
+    const t=$('tree');t.innerHTML='';t.style.display='';
+    TREE_HITS=0;
+    buildTree(null,CUR,t,0);
+    const hs=$('treeHits');if(hs)hs.textContent=TREE_QUERY?(TREE_HITS+' 处命中'):'';
+    if(TREE_QUERY){const h=t.querySelector('.hit');if(h&&h.scrollIntoView)h.scrollIntoView({block:'center'});}
+    if(tt)tt.style.display='inline-flex';
+    syncLevelSelect();
+    $('outMode').textContent='树视图';
+  }else{
+    $('tree').style.display='none';
+    const o=$('output');o.style.display='';
+    o.innerHTML=highlight(CUR_RAW);
+    if(tt)tt.style.display='none';
+    $('outMode').textContent='文本视图';
+  }
+}
+// 层级折叠：n<0=全部展开；n=0=全部折叠；n>0=展开到第 n 层
+function applyTreeLevel(n){
+  TREE_LEVEL=n;
+  const t=$('tree');if(!t)return;
+  const dets=t.getElementsByTagName('details');
+  for(let i=0;i<dets.length;i++){
+    const d=dets[i];
+    d.open=(n<0)?true:((d._depth||0)<n);
+  }
+  syncLevelSelect();
+}
+function syncLevelSelect(){const s=$('treeLevel');if(s)s.value=String(TREE_LEVEL);}
+
+// 核心：解析 + 格式化
+function doFormat(showOk){
+  const raw=$('input').value;
+  if(!raw.trim()){
+    CUR=null;CUR_RAW='';
+    clearMsgs();$('output').style.display='none';$('tree').style.display='none';
+    $('empty').style.display='';$('stats').textContent='';$('outMode').textContent='';
+    return;
+  }
+  let obj;
+  try{ obj=JSON.parse(raw); }
+  catch(err){
+    CUR=null;
+    const m=String(err&&err.message||err);
+    // 尝试从错误信息里提取位置
+    let pos=null;
+    const mm=m.match(/position\s+(\d+)/i)||m.match(/character\s+(\d+)/i);
+    if(mm)pos=parseInt(mm[1],10);
+    setError(m,raw,pos);
+    $('stats').textContent='解析失败';$('outMode').textContent='';
+    return;
+  }
+  if(SORTED)obj=sortDeep(obj);
+  CUR=obj;
+  const unit=indentUnit();
+  try{ CUR_RAW=JSON.stringify(obj,null,unit); }
+  catch(e){ CUR_RAW=JSON.stringify(obj); }
+  render();
+  // 统计
+  const ms=measure(obj);
+  const bytes=new Blob([CUR_RAW]).size;
+  const lines=CUR_RAW.split('\n').length;
+  $('stats').textContent='节点 '+ms.nodes+' · 深度 '+ms.maxd+' · '+lines+' 行 · '+fmtBytes(bytes);
+  if(showOk){ flashOk('✓ 已格式化'); }
+}
+
+function fmtBytes(n){
+  if(n<1024)return n+' B';
+  if(n<1024*1024)return (n/1024).toFixed(1)+' KB';
+  return (n/1024/1024).toFixed(2)+' MB';
+}
+let okTimer=null;
+function flashOk(msg){
+  const h=$('okHint');h.textContent=msg;h.style.display='';
+  if(okTimer)clearTimeout(okTimer);
+  okTimer=setTimeout(function(){h.style.display='none';},1200);
+}
+
+function doMinify(){
+  const raw=$('input').value;
+  if(!raw.trim())return;
+  let obj;try{obj=JSON.parse(raw);}catch(err){
+    const m=String(err&&err.message||err);let pos=null;
+    const mm=m.match(/position\s+(\d+)/i);if(mm)pos=parseInt(mm[1],10);
+    setError(m,raw,pos);$('stats').textContent='解析失败';return;
+  }
+  if(SORTED)obj=sortDeep(obj);
+  CUR=obj;CUR_RAW=JSON.stringify(obj);
+  $('input').value=CUR_RAW;
+  clearMsgs();render();
+  const bytes=new Blob([CUR_RAW]).size;
+  $('stats').textContent='已压缩 · '+fmtBytes(bytes);
+  flashOk('✓ 已压缩');
+}
+
+function copyText(){
+  const s=CUR_RAW||$('input').value;
+  if(!s)return;
+  const done=function(){flashOk('✓ 已复制');};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(s).then(done,function(){fallbackCopy(s);done();});
+  }else{fallbackCopy(s);done();}
+}
+function fallbackCopy(s){
+  const ta=document.createElement('textarea');ta.value=s;
+  ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);
+  ta.select();try{document.execCommand('copy');}catch(e){}
+  try{document.body.removeChild(ta);}catch(e){}
+}
+function copyString(s,msg){
+  const done=function(){flashOk(msg||'✓ 已复制');};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(s).then(done,function(){fallbackCopy(s);done();});
+  }else{fallbackCopy(s);done();}
+}
+// 复制树节点子树内容：字符串取原文，其余取格式化 JSON
+function copyNode(val){
+  let s;
+  if(typeof val==='string')s=val;
+  else{try{s=JSON.stringify(val,null,2);}catch(e){s=String(val);}}
+  copyString(s,'✓ 已复制节点');
+}
+function addCopyBtn(parent,val){
+  const b=document.createElement('button');
+  b.type='button';b.className='copybtn';b.textContent='复制';b.title='复制该节点内容';
+  b.onclick=function(ev){ev.stopPropagation();ev.preventDefault();copyNode(val);};
+  parent.appendChild(b);
+}
+
+function download(){
+  const s=CUR_RAW||$('input').value;
+  if(!s.trim())return;
+  try{
+    const blob=new Blob([s],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=($('inName').textContent||'formatted').replace(/\.json$/i,'')+'.json';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+    flashOk('✓ 已下载');
+  }catch(e){}
+}
+
+function loadText(text,name){
+  $('input').value=text;
+  if(name)$('inName').textContent=name;
+  if(name)recordRecent(name,text);
+  doFormat(false);
+}
+
+// ============================ 最近打开的文件（带时间，倒序） ============================
+const RECENT_MAX=8;
+const RECENT_KEY='jfmt_recent';
+const RECENT_TEXT_MAX=1000000; // 单条缓存内容字符上限，超出只记名与时间
+function recentLoad(){try{const a=JSON.parse(localStorage.getItem(RECENT_KEY)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function recentSave(list){
+  try{localStorage.setItem(RECENT_KEY,JSON.stringify(list));return;}catch(e){}
+  // 配额超限时从最旧条目开始丢弃缓存内容重试
+  for(let i=list.length-1;i>=0;i--){
+    if(list[i].text){list[i].text='';try{localStorage.setItem(RECENT_KEY,JSON.stringify(list));return;}catch(e2){}}
+  }
+  try{localStorage.removeItem(RECENT_KEY);}catch(e3){}
+}
+function pad2(n){return n<10?'0'+n:''+n;}
+function fmtTime(ts){const d=new Date(ts);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate())+' '+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());}
+function recordRecent(name,text){
+  const list=recentLoad().filter(function(r){return r.name!==name;});
+  list.unshift({name:name,time:Date.now(),size:text.length,text:text.length<=RECENT_TEXT_MAX?text:''});
+  while(list.length>RECENT_MAX)list.pop();
+  recentSave(list);
+  renderRecent();
+}
+function renderRecent(){
+  const dd=$('ddRecent');if(!dd)return;
+  dd.innerHTML='';
+  const list=recentLoad();
+  list.sort(function(a,b){return (b.time||0)-(a.time||0);});
+  if(!list.length){
+    const e=document.createElement('div');e.className='dd-empty';
+    e.textContent='暂无打开记录（打开/拖入文件后自动记录最近 '+RECENT_MAX+' 条）';
+    dd.appendChild(e);return;
+  }
+  list.forEach(function(r){
+    const item=document.createElement('div');item.className='dd-item';
+    const main=document.createElement('div');main.className='dd-main';
+    const nm=document.createElement('div');nm.className='dd-name';nm.textContent=r.name;
+    const meta=document.createElement('div');meta.className='dd-meta';
+    meta.textContent='打开于 '+fmtTime(r.time)+' · '+fmtBytes(r.size||0)+(r.text?'':' · 内容未缓存');
+    main.appendChild(nm);main.appendChild(meta);
+    const rm=document.createElement('button');rm.className='dd-rm';rm.type='button';rm.textContent='×';rm.title='移除该记录';
+    rm.onclick=function(ev){ev.stopPropagation();recentSave(recentLoad().filter(function(x){return x.name!==r.name;}));renderRecent();};
+    item.appendChild(main);item.appendChild(rm);
+    item.onclick=function(){
+      dd.style.display='none';
+      if(r.text)loadText(r.text,r.name);
+      else flashOk('内容未缓存（文件过大），请重新手动打开');
+    };
+    dd.appendChild(item);
+  });
+}
+
+// ============================ 事件绑定 ============================
+$('btnFormat').onclick=function(){doFormat(true);};
+$('btnMinify').onclick=doMinify;
+$('btnCopy').onclick=copyText;
+$('btnDownload').onclick=download;
+$('btnClear').onclick=function(){
+  $('input').value='';$('inName').textContent='';CUR=null;CUR_RAW='';SORTED=false;
+  $('btnSort').classList.remove('primary');
+  clearMsgs();$('output').style.display='none';$('tree').style.display='none';
+  $('empty').style.display='';$('stats').textContent='';$('outMode').textContent='';
+};
+$('btnSort').onclick=function(){
+  SORTED=!SORTED;
+  $('btnSort').classList.toggle('primary',SORTED);
+  if(CUR!==null||$('input').value.trim())doFormat(false);
+  flashOk(SORTED?'✓ 已按键排序':'✓ 已取消排序');
+};
+$('btnOpen').onclick=function(){$('fileInput').click();};
+$('fileInput').addEventListener('change',function(e){
+  const f=e.target.files[0];if(!f)return;
+  const rd=new FileReader();
+  rd.onload=function(){loadText(String(rd.result||''),f.name);};
+  rd.readAsText(f);
+  e.target.value='';
+});
+$('indent').onchange=function(){if(CUR!==null)doFormat(false);};
+$('btnText').onclick=function(){VIEW='text';$('btnText').classList.add('on');$('btnTree').classList.remove('on');if(CUR!==null)render();else $('treeTools').style.display='none';};
+$('btnTree').onclick=function(){VIEW='tree';$('btnTree').classList.add('on');$('btnText').classList.remove('on');if(CUR!==null)render();else doFormat(false);};
+$('btnExpand').onclick=function(){applyTreeLevel(-1);};
+$('btnCollapse').onclick=function(){applyTreeLevel(0);};
+$('treeLevel').onchange=function(){applyTreeLevel(parseInt($('treeLevel').value,10));};
+// 树节点搜索：输入即重渲染并高亮命中、自动展开祖先；Esc 清空
+$('treeSearch').addEventListener('input',function(e){TREE_QUERY=(e.target.value||'').trim();if(VIEW==='tree'&&CUR!==null)render();});
+$('treeSearch').addEventListener('keydown',function(e){if(e.key==='Escape'){e.target.value='';TREE_QUERY='';if(VIEW==='tree'&&CUR!==null)render();}});
+// 最近文件下拉
+$('btnRecent').onclick=function(ev){
+  ev.stopPropagation();
+  const dd=$('ddRecent');
+  if(dd.style.display==='block'){dd.style.display='none';return;}
+  renderRecent();dd.style.display='block';
+};
+$('ddRecent').addEventListener('click',function(ev){ev.stopPropagation();});
+document.addEventListener('click',function(){$('ddRecent').style.display='none';});
+
+let debounce=null;
+$('input').addEventListener('input',function(){
+  if(!$('chkAuto').checked)return;
+  if(debounce)clearTimeout(debounce);
+  debounce=setTimeout(function(){doFormat(false);},250);
+});
+// Ctrl/Cmd+Enter 手动格式化
+$('input').addEventListener('keydown',function(e){
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();doFormat(true);}
+});
+
+// 拖拽文件
+['dragenter','dragover'].forEach(function(ev){
+  window.addEventListener(ev,function(e){e.preventDefault();document.body.classList.add('dragover');});
+});
+['dragleave','drop'].forEach(function(ev){
+  window.addEventListener(ev,function(e){e.preventDefault();if(ev==='drop'||e.relatedTarget===null)document.body.classList.remove('dragover');});
+});
+window.addEventListener('drop',function(e){
+  e.preventDefault();document.body.classList.remove('dragover');
+  const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
+  if(!f)return;
+  const rd=new FileReader();
+  rd.onload=function(){loadText(String(rd.result||''),f.name);};
+  rd.readAsText(f);
+});
+</script>
+</body>
+</html>

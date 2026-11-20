@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiro 模型原始请求 / 返回解析器</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2128;--border:#30363d;--fg:#c9d1d9;--muted:#8b949e;--accent:#58a6ff;--ok:#3fb950;--err:#f85149;--warn:#d29922;--str:#a5d6ff;--num:#f0883e;--key:#79c0ff;--bool:#d2a8ff;}
+*{box-sizing:border-box;}
+body{margin:0;font:14px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,"Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg);}
+header{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:20;}
+h1{margin:0;font-size:15px;font-weight:600;}
+h1 .sub{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px;}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:9px;}
+button{background:#21262d;color:var(--fg);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;}
+button:hover:not(:disabled){border-color:var(--accent);color:#fff;}
+button:disabled{opacity:.4;cursor:not-allowed;}
+button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff;font-weight:600;}
+button.primary:hover:not(:disabled){background:#388bfd;}
+label.chk{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;cursor:pointer;user-select:none;}
+#fileInfo{color:var(--muted);font-size:12px;margin-left:auto;text-align:right;}
+#fileInfo b{color:var(--fg);}
+main{display:flex;height:calc(100vh - 88px);}
+aside{width:330px;border-right:1px solid var(--border);overflow-y:auto;flex-shrink:0;background:var(--panel);}
+aside .side-h{padding:9px 12px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--panel);text-transform:uppercase;letter-spacing:.5px;}
+.tx{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;border-left:3px solid transparent;}
+.tx:hover{background:var(--panel2);}
+.tx.active{background:#1f6feb1f;border-left-color:var(--accent);}
+.tx .tgt{font-weight:600;word-break:break-all;font-size:13px;}
+.tx.gen .tgt{color:var(--accent);}
+.tx .meta{color:var(--muted);font-size:11.5px;margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;}
+.tx .dot{width:7px;height:7px;border-radius:50%;display:inline-block;}
+section{flex:1;overflow-y:auto;padding:16px 18px;}
+.empty{color:var(--muted);text-align:center;margin-top:80px;line-height:2;}
+.empty code{background:var(--panel2);padding:2px 7px;border-radius:4px;color:var(--str);}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden;}
+.card>h2{margin:0;padding:9px 14px;font-size:13px;border-bottom:1px solid var(--border);background:var(--panel2);display:flex;justify-content:space-between;align-items:center;gap:10px;}
+.card>h2 .tag{color:var(--muted);font-weight:400;font-size:11.5px;}
+.card .body{padding:12px 14px;}
+pre.raw{background:#0b0f14;border:1px solid var(--border);border-radius:6px;padding:9px 11px;overflow-x:auto;font:12px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace;color:var(--str);white-space:pre-wrap;word-break:break-all;margin:0 0 10px;}
+.badge{display:inline-block;padding:2px 9px;border-radius:11px;font-size:11.5px;font-weight:600;white-space:nowrap;}
+.badge.ok{background:#3fb9501f;color:var(--ok);border:1px solid #3fb95055;}
+.badge.err{background:#f851491f;color:var(--err);border:1px solid #f8514955;}
+.badge.warn{background:#d299221f;color:var(--warn);border:1px solid #d2992255;}
+.badge.info{background:#58a6ff1f;color:var(--accent);border:1px solid #58a6ff55;}
+.facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:7px;margin-bottom:12px;}
+.fact{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12.5px;}
+.fact .fk{color:var(--muted);font-size:11px;display:block;margin-bottom:2px;}
+.fact .fv{color:var(--fg);word-break:break-word;}
+details{margin:1px 0;}
+details>summary{cursor:pointer;padding:1px 0;list-style:none;outline:none;}
+details>summary::-webkit-details-marker{display:none;}
+details>summary::before{content:"\25B8";color:var(--muted);display:inline-block;width:12px;transition:transform .1s;}
+details[open]>summary::before{transform:rotate(90deg);}
+details>summary:hover{color:var(--accent);}
+.kv{padding:1px 0 1px 15px;word-break:break-word;}
+.k{color:var(--key);}
+.str{color:var(--str);}
+.num{color:var(--num);}
+.bool{color:var(--bool);}
+.nul{color:var(--muted);}
+.nested{margin-left:15px;border-left:1px solid var(--border);padding-left:8px;}
+.frame{border:1px solid var(--border);border-radius:6px;margin-bottom:8px;overflow:hidden;}
+.frame>.fh{padding:6px 10px;background:var(--panel2);display:flex;gap:9px;align-items:center;font-size:12.5px;flex-wrap:wrap;}
+.frame>.fh .et{font-weight:600;color:var(--fg);}
+.frame>.fb{padding:8px 11px;}
+.crc{font-size:10.5px;padding:1px 6px;border-radius:8px;font-weight:600;}
+.crc.ok{color:var(--ok);background:#3fb95018;}
+.crc.bad{color:var(--err);background:#f8514918;}
+.muted{color:var(--muted);}
+.assistant{background:#0b0f14;border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:6px;padding:10px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;margin-bottom:12px;}
+.section-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 6px;}
+.tools{display:flex;gap:6px;margin:2px 0 6px;flex-wrap:wrap;}
+.tools button{padding:2px 10px;font-size:11.5px;border-radius:5px;}
+pre.jsonfull{max-height:62vh;overflow:auto;margin:0 0 10px;}
+.dd{position:absolute;top:100%;left:16px;width:460px;max-height:320px;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px #0009;z-index:40;display:none;}
+.dd-item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer;}
+.dd-item:last-child{border-bottom:none;}
+.dd-item:hover{background:var(--panel2);}
+.dd-main{flex:1;min-width:0;}
+.dd-name{font-size:12.5px;font-weight:600;word-break:break-all;}
+.dd-meta{font-size:11px;}
+.dd-rm{padding:0 8px;font-size:14px;line-height:20px;border-radius:4px;background:transparent;flex-shrink:0;}
+.dd-empty{padding:14px;color:var(--muted);font-size:12px;text-align:center;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+.filterbar{display:flex;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center;}
+.filterbar button{padding:2px 9px;font-size:11.5px;border-radius:11px;border:1px solid var(--border);background:var(--panel2);color:var(--muted);cursor:pointer;}
+.filterbar button.on{background:#1f6feb33;border-color:var(--accent);color:var(--accent);}
+.catbadge{font-size:10px;padding:0 6px;border-radius:8px;margin-left:6px;border:1px solid;white-space:nowrap;}
+.cat-model{color:var(--accent);border-color:var(--accent);}
+.cat-act{color:var(--muted);border-color:var(--border);}
+.cat-other{color:var(--warn);border-color:var(--warn);}
+.searchbar{padding:8px 10px;border-bottom:1px solid var(--border);}
+.searchbar input{width:100%;box-sizing:border-box;padding:5px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--panel2);color:var(--fg);}
+.searchbar input:focus{outline:none;border-color:var(--accent);}
+</style>
+</head>
+<body>
+<header>
+  <h1>Kiro 模型原始请求 / 返回解析器<span class="sub">纯前端 · 文件不出本地 · 支持手动刷新读取最新追加内容</span></h1>
+  <div class="toolbar">
+    <button id="btnOpen" class="primary">选择日志文件…</button>
+    <button id="btnRefresh" disabled>⟳ 刷新</button>
+    <button id="btnRecent">最近文件 ▾</button>
+    <label class="chk"><input type="checkbox" id="chkAuto"> 自动刷新 (2s)</label>
+    <span id="fileInfo">未选择文件</span>
+  </div>
+  <input type="file" id="fileInput" accept=".log,.txt,text/plain" style="display:none">
+  <div id="ddRecent" class="dd"></div>
+</header>
+<main>
+  <aside>
+    <div class="side-h">请求 / 返回事务 <span id="txCount"></span></div>
+    <div class="searchbar"><input type="text" id="searchInput" placeholder="搜索内容关键字…（请求/返回全文，Esc 清空）"></div>
+    <div id="filterBar" class="filterbar"></div>
+    <div id="txList"><div class="empty" style="margin-top:30px;font-size:12.5px;">选择 <code>sess_*.log</code> 后显示</div></div>
+  </aside>
+  <section id="detail">
+    <div class="empty">
+      <div style="font-size:40px;">📡</div>
+      点左上「选择日志文件…」打开 <code>H:\data\my\kirolog\sess_&lt;id&gt;.log</code><br>
+      Kiro 会持续往同一文件追加，之后点「⟳ 刷新」即可读取最新内容<br>
+      <span class="muted" style="font-size:12px;">解析：块切分 → hex/utf8 无损还原 → de-chunk → EventStream 帧 → CRC32 校验</span>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+// ============================ 工具 ============================
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function trunc(s,n){s=String(s);return s.length>n?s.slice(0,n)+' …['+s.length+' chars]':s;}
+function hexOf(bytes){let s='';for(let i=0;i<bytes.length;i++)s+=bytes[i].toString(16).padStart(2,'0');return s;}
+
+// CRC-32/ISO-HDLC (poly 0xEDB88320) — AWS EventStream 校验
+const CRC_TABLE=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
+function crc32(bytes,start,end){let c=0xFFFFFFFF;for(let i=start;i<end;i++)c=CRC_TABLE[(c^bytes[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+
+// 按 bodyEncoding 无损还原字节
+function reconstruct(bodyText,enc,bodyBytes){
+  if(enc==='hex'){
+    const clean=bodyText.replace(/[^0-9a-fA-F]/g,'');
+    const out=new Uint8Array(clean.length>>1);
+    for(let i=0;i<out.length;i++)out[i]=parseInt(clean.substr(i<<1,2),16);
+    return out;
+  }
+  // utf8: 日志里存的就是完整文本（https 层为格式化 pretty JSON），不得按 bodyBytes 截断
+  return new TextEncoder().encode(bodyText);
+}
+// 分离 HTTP 头 / body（字节层面找 \r\n\r\n）
+function splitHttp(bytes){
+  for(let i=0;i+3<bytes.length;i++){
+    if(bytes[i]===13&&bytes[i+1]===10&&bytes[i+2]===13&&bytes[i+3]===10)
+      return {head:bytes.slice(0,i),body:bytes.slice(i+4)};
+  }
+  return {head:bytes.slice(),body:new Uint8Array(0)};
+}
+const TD=new TextDecoder();
+// HTTP chunked 解码：*(chunk-size CRLF chunk-data CRLF) 0 CRLF
+function dechunk(bytes){
+  const out=[];let off=0;
+  while(off<bytes.length){
+    let crlf=-1;
+    for(let i=off;i+1<bytes.length;i++){if(bytes[i]===13&&bytes[i+1]===10){crlf=i;break;}}
+    if(crlf<0)break;
+    const sizeLine=TD.decode(bytes.slice(off,crlf));
+    const size=parseInt(sizeLine.split(';')[0].trim(),16);
+    if(isNaN(size))break;
+    if(size===0)break;
+    const ds=crlf+2;
+    if(ds+size>bytes.length){out.push(bytes.slice(ds));break;}
+    out.push(bytes.slice(ds,ds+size));
+    off=ds+size+2;
+  }
+  let total=0;out.forEach(a=>total+=a.length);
+  const res=new Uint8Array(total);let p=0;out.forEach(a=>{res.set(a,p);p+=a.length;});
+  return res;
+}
+// EventStream 帧头解析
+function parseEsHeaders(bytes,start,len,dv){
+  const hs={};let off=start;const end=start+len;
+  while(off<end){
+    const nameLen=bytes[off];off+=1;
+    const name=TD.decode(bytes.slice(off,off+nameLen));off+=nameLen;
+    const type=bytes[off];off+=1;
+    let value;
+    switch(type){
+      case 0:value=true;break;
+      case 1:value=false;break;
+      case 2:value=dv.getInt8(off);off+=1;break;
+      case 3:value=dv.getInt16(off);off+=2;break;
+      case 4:value=dv.getInt32(off);off+=4;break;
+      case 5:value=dv.getBigInt64(off).toString();off+=8;break;
+      case 6:{const bl=dv.getUint16(off);off+=2;value=hexOf(bytes.slice(off,off+bl));off+=bl;break;}
+      case 7:{const sl=dv.getUint16(off);off+=2;value=TD.decode(bytes.slice(off,off+sl));off+=sl;break;}
+      case 8:{value=new Date(Number(dv.getBigInt64(off))).toISOString();off+=8;break;}
+      case 9:{value=hexOf(bytes.slice(off,off+16));off+=16;break;}
+      default:value='<type '+type+'>';off=end;break;
+    }
+    hs[name]=value;
+  }
+  return hs;
+}
+// EventStream 完整帧解码 + CRC32 校验
+function decodeEventStream(bytes){
+  const frames=[];let off=0;
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  while(off+16<=bytes.length){
+    const totalLen=dv.getUint32(off),headersLen=dv.getUint32(off+4),preludeCrc=dv.getUint32(off+8);
+    if(totalLen<16||off+totalLen>bytes.length){frames.push({error:'bad frame length '+totalLen+' @'+off});break;}
+    const msgCrcOff=off+totalLen-4,msgCrc=dv.getUint32(msgCrcOff);
+    const preludeOk=crc32(bytes,off,off+8)===preludeCrc;
+    const messageOk=crc32(bytes,off,msgCrcOff)===msgCrc;
+    const headers=parseEsHeaders(bytes,off+12,headersLen,dv);
+    const ps=off+12+headersLen,pl=totalLen-12-headersLen-4;
+    const pb=bytes.slice(ps,ps+pl);
+    let pj=null;try{pj=JSON.parse(TD.decode(pb));}catch(e){}
+    frames.push({offset:off,totalLen,headersLen,payloadLen:pl,preludeCrcOk:preludeOk,messageCrcOk:messageOk,headers,payload:pj!==null?pj:{_text:TD.decode(pb),_hex:hexOf(pb)}});
+    off+=totalLen;
+  }
+  return frames;
+}
+
+// ============================ 日志解析 ============================
+function parseLog(text){
+  const MARK=/\[[0-9T:.\-Z]+\] ==================== (REQUEST|RESPONSE) \(([^)]+)\) ====================/g;
+  const marks=[];let m;
+  while((m=MARK.exec(text))!==null)marks.push({kind:m[1],transport:m[2],idx:m.index,headEnd:MARK.lastIndex,ts:(m[0].match(/\[([^\]]+)\]/)||[,''])[1]});
+  const blocks=[];
+  for(let i=0;i<marks.length;i++){
+    const start=marks[i].headEnd,end=(i+1<marks.length)?marks[i+1].idx:text.length;
+    const seg=text.slice(start,end);
+    const host=(seg.match(/host:\s*(.*)/)||[,''])[1].trim();
+    const bodyBytes=parseInt((seg.match(/bodyBytes:\s*(\d+)/)||[,'0'])[1],10);
+    const beIdx=seg.indexOf('bodyEncoding:');
+    let enc='utf8',hasEnc=false;
+    if(beIdx>=0){hasEnc=true;const rest=seg.slice(beIdx+13);const nl=rest.indexOf(String.fromCharCode(10));enc=(nl>=0?rest.slice(0,nl):rest).trim();}
+    const bIdx=seg.indexOf('body:\n');
+    let bodyText=(bIdx>=0?seg.slice(bIdx+6):'').replace(/[\r\n]+$/,'');
+    blocks.push({kind:marks[i].kind,transport:marks[i].transport,ts:marks[i].ts,host,bodyBytes,enc,hasEnc,bodyText});
+  }
+  const txs=[];
+  for(let i=0;i<blocks.length;i++){
+    if(blocks[i].kind!=='REQUEST')continue;
+    let resp=null;
+    for(let j=i+1;j<blocks.length;j++){if(blocks[j].kind==='RESPONSE'){resp=blocks[j];break;}}
+    txs.push(analyzeTx(blocks[i],resp));
+  }
+  return txs;
+}
+// 事务分类：conversationState=真·模型推理调用(vibe)；payload[]=活动/遥测上报；其余=其它
+function classifyTx(req){
+  const j=req.json;
+  if(j&&j.conversationState)return 'model';
+  if(j&&Array.isArray(j.payload))return 'activity';
+  if(req.isGen)return 'model';
+  return 'other';
+}
+function analyzeTx(req,resp){
+  const tx={req,resp};
+  // request
+  try{
+    const rb=reconstruct(req.bodyText,req.enc,req.bodyBytes);
+    req.exact=(rb.length===req.bodyBytes);
+    const sp=splitHttp(rb);
+    let rHead=sp.head,rBody=sp.body;
+    if(rBody.length===0&&TD.decode(rHead).trim().charAt(0)==='{'){rBody=rHead;rHead=new Uint8Array(0);}
+    req.headStr=TD.decode(rHead);
+    const NL=String.fromCharCode(10);
+    const hls=req.headStr.split(NL);
+    let tgt='';
+    for(const ln of hls){const t=ln.trim();if(t.length>=13&&t.slice(0,13).toLowerCase()==='x-amz-target:'){tgt=t.slice(13).trim();break;}}
+    const line0=(hls[0]||'').trim();
+    const METH=['GET ','POST ','PUT ','DELETE ','PATCH ','HEAD ','OPTIONS ','PRI '];
+    let isRL=false;const up=line0.toUpperCase();
+    for(const mm of METH){if(up.slice(0,mm.length)===mm){isRL=true;break;}}
+    req.target=tgt?tgt:(isRL?line0:(req.host||'(request)'));
+    req.isGen=/GenerateAssistantResponse/i.test(req.headStr);
+    const bodyStr=TD.decode(rBody);
+    try{req.json=JSON.parse(bodyStr);}catch(e){req.textBody=bodyStr;}
+    req.cat=classifyTx(req);
+  }catch(e){req.err=String(e);}
+  // response
+  if(resp){
+    try{
+      const sb=reconstruct(resp.bodyText,resp.enc,resp.bodyBytes);
+      resp.bytes=sb;resp.exact=(sb.length===resp.bodyBytes);
+      const sp=splitHttp(sb);
+      let sHead=sp.head,sBody=sp.body;
+      if(sBody.length===0&&TD.decode(sHead).trim().charAt(0)==='{'){sBody=sHead;sHead=new Uint8Array(0);}
+      resp.headStr=TD.decode(sHead);
+      resp.status=(resp.headStr.split(/\r?\n/)[0]||'').trim();
+      resp.ct=(resp.headStr.match(/content-type:\s*([^\r\n]+)/i)||[,''])[1].trim();
+      resp.chunked=/transfer-encoding:\s*chunked/i.test(resp.headStr);
+      if(/eventstream/i.test(resp.ct)){
+        const es=resp.chunked?dechunk(sBody):sBody;
+        resp.esLen=es.length;
+        resp.frames=decodeEventStream(es);
+        resp.crcAllOk=resp.frames.length>0&&resp.frames.every(f=>f.preludeCrcOk&&f.messageCrcOk);
+      }else{
+        const t=TD.decode(sBody);try{resp.json=JSON.parse(t);}catch(e){resp.textBody=t;}
+      }
+    }catch(e){resp.err=String(e);}
+  }
+  return tx;
+}
+
+// ============================ 渲染 ============================
+let TXS=[],SEL=-1,FILTER='all',QUERY='';
+const $=id=>document.getElementById(id);
+const CATMETA={model:{full:'模型调用',cls:'cat-model'},activity:{full:'activity上报',cls:'cat-act'},other:{full:'其它',cls:'cat-other'}};
+
+function jsonTree(key,val,container,depth){
+  depth=depth||0;
+  if(val!==null&&typeof val==='object'){
+    const isArr=Array.isArray(val),n=isArr?val.length:Object.keys(val).length;
+    const det=document.createElement('details');
+    if(depth<1)det.open=true;
+    const sum=document.createElement('summary');
+    sum.innerHTML=(key!==null?'<span class="k">'+esc(key)+'</span>: ':'')+'<span class="muted">'+(isArr?'['+n+']':'{'+n+'}')+'</span>';
+    det.appendChild(sum);
+    const wrap=document.createElement('div');wrap.className='nested';
+    const entries=isArr?val.map((v,i)=>[i,v]):Object.entries(val);
+    for(const [k,v] of entries)jsonTree(k,v,wrap,depth+1);
+    det.appendChild(wrap);container.appendChild(det);
+  }else{
+    const div=document.createElement('div');div.className='kv';
+    let vs;
+    if(typeof val==='string')vs='<span class="str">"'+esc(trunc(val,400))+'"</span>';
+    else if(typeof val==='number')vs='<span class="num">'+val+'</span>';
+    else if(typeof val==='boolean')vs='<span class="bool">'+val+'</span>';
+    else vs='<span class="nul">null</span>';
+    div.innerHTML=(key!==null?'<span class="k">'+esc(key)+'</span>: ':'')+vs;
+    container.appendChild(div);
+  }
+}
+function el(html){const d=document.createElement('div');d.innerHTML=html;return d.firstElementChild;}
+function copyFallback(s){const ta=document.createElement('textarea');ta.value=s;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}try{document.body.removeChild(ta);}catch(e){}}
+function downloadJson(fname,obj){try{const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(a.href);},2000);}catch(e){}}
+// 格式化全文 / 复制 / 下载 工具条（getObj 延迟取对象，fname 为下载文件名）
+function jsonTools(getObj,fname){
+  const bar=document.createElement('div');bar.className='tools';
+  const pre=document.createElement('pre');pre.className='raw jsonfull';pre.style.display='none';
+  const b1=document.createElement('button');b1.textContent='格式化全文';
+  b1.onclick=function(){if(pre.style.display==='none'){pre.textContent=JSON.stringify(getObj(),null,2);pre.style.display='';b1.textContent='收起全文';}else{pre.style.display='none';b1.textContent='格式化全文';}};
+  const b2=document.createElement('button');b2.textContent='复制';
+  b2.onclick=function(){const s=JSON.stringify(getObj(),null,2);const done=function(){b2.textContent='已复制✓';setTimeout(function(){b2.textContent='复制';},1500);};if(typeof navigator!=='undefined'&&navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(done,function(){copyFallback(s);done();});}else{copyFallback(s);done();}};
+  const b3=document.createElement('button');b3.textContent='下载 .json';
+  b3.onclick=function(){downloadJson(fname,getObj());};
+  bar.appendChild(b1);bar.appendChild(b2);bar.appendChild(b3);
+  return {bar:bar,pre:pre};
+}
+
+// 关键字搜索：把每笔事务的请求/返回全文拼成小写 haystack 缓存到 tx._hay
+function getHay(tx){
+  if(tx._hay!=null)return tx._hay;
+  const parts=[];
+  const r=tx.req||{};
+  if(r.target)parts.push(String(r.target));
+  if(r.headStr)parts.push(r.headStr);
+  if(r.json!=null){try{parts.push(JSON.stringify(r.json));}catch(e){}}
+  else if(r.textBody)parts.push(r.textBody);
+  const s=tx.resp||{};
+  if(s.json!=null){try{parts.push(JSON.stringify(s.json));}catch(e){}}
+  else if(s.textBody)parts.push(s.textBody);
+  if(s.frames)s.frames.forEach(function(f){if(f.payload!=null){try{parts.push(JSON.stringify(f.payload));}catch(e){}}});
+  tx._hay=parts.join(' ').toLowerCase();
+  return tx._hay;
+}
+function matchQuery(tx){if(!QUERY)return true;return getHay(tx).indexOf(QUERY.toLowerCase())>=0;}
+function matchCat(tx){const c=(tx.req&&tx.req.cat)||'other';return FILTER==='all'||c===FILTER;}
+function renderFilterBar(){
+  const bar=$('filterBar');if(!bar)return;bar.innerHTML='';
+  if(!TXS.length){bar.style.display='none';return;}
+  bar.style.display='';
+  const counts={all:0,model:0,activity:0,other:0};
+  TXS.forEach(function(tx){if(!matchQuery(tx))return;const c=(tx.req&&tx.req.cat)||'other';counts.all++;if(counts[c]!=null)counts[c]++;});
+  if(FILTER!=='all'&&counts[FILTER]===0)FILTER='all';
+  const defs=[['all','全部'],['model','模型调用'],['activity','activity上报'],['other','其它']];
+  defs.forEach(function(d){
+    const key=d[0];
+    if(key!=='all'&&counts[key]===0)return;
+    const b=document.createElement('button');
+    b.className=(FILTER===key?'on':'');
+    b.textContent=d[1]+' '+counts[key];
+    b.onclick=function(){FILTER=key;renderFilterBar();renderTxList();};
+    bar.appendChild(b);
+  });
+}
+function renderTxList(){
+  renderFilterBar();
+  const list=$('txList');list.innerHTML='';
+  const shown=TXS.filter(function(tx){return matchCat(tx)&&matchQuery(tx);}).length;
+  $('txCount').textContent=TXS.length?'('+shown+'/'+TXS.length+')':'';
+  if(!TXS.length){list.innerHTML='<div class="empty" style="margin-top:30px;font-size:12.5px;">无 REQUEST 块</div>';return;}
+  let anyShown=false;
+  TXS.forEach((tx,i)=>{
+    const r=tx.req;
+    const cat=r.cat||'other';
+    if(!matchCat(tx)||!matchQuery(tx))return;
+    anyShown=true;
+    const hasResp=!!tx.resp;
+    const crcOk=hasResp&&tx.resp.frames?tx.resp.crcAllOk:(hasResp?true:false);
+    const dot=hasResp?(crcOk?'var(--ok)':'var(--err)'):'var(--muted)';
+    const cm=CATMETA[cat]||CATMETA.other;
+    const badge='<span class="catbadge '+cm.cls+'">'+cm.full+'</span>';
+    const node=el('<div class="tx'+(r.isGen?' gen':'')+(i===SEL?' active':'')+'">'+
+      '<div class="tgt"><span class="dot" style="background:'+dot+'"></span> '+esc(r.target||'(request)')+badge+'</div>'+
+      '<div class="meta"><span>'+esc(r.transport)+'</span><span>req '+r.bodyBytes+'B/'+r.enc+'</span>'+
+      (hasResp?'<span>res '+tx.resp.bodyBytes+'B/'+tx.resp.enc+'</span>':'<span class="muted">no resp</span>')+'</div>'+
+      '<div class="meta"><span class="muted">'+esc((r.ts||'').replace('T',' ').replace('Z',''))+'</span></div></div>');
+    node.onclick=()=>{SEL=i;renderTxList();renderDetail();};
+    list.appendChild(node);
+  });
+  if(!anyShown)list.innerHTML='<div class="empty" style="margin-top:30px;font-size:12.5px;">'+(QUERY?'无匹配「'+esc(QUERY)+'」的事务':'该分类下无事务')+'</div>';
+}
+
+function renderDetail(){
+  const sec=$('detail');sec.innerHTML='';
+  if(SEL<0||!TXS[SEL]){sec.innerHTML='<div class="empty">从左侧选择一个事务</div>';return;}
+  const tx=TXS[SEL],r=tx.req,s=tx.resp;
+
+  // ---- REQUEST card ----
+  const rc=el('<div class="card"><h2><span>▶ REQUEST <span class="tag">'+esc(r.transport)+' · '+esc(r.host)+'</span></span>'+
+    '<span class="tag">'+r.bodyBytes+' bytes · '+esc(r.enc)+(r.exact?' · <span style="color:var(--ok)">exact✓</span>':(r.hasEnc?' · <span style="color:var(--err)">长度不符</span>':' · <span class="muted">pretty-json(格式化,非逐字节)</span>'))+'</span></h2><div class="body"></div></div>');
+  const rb=rc.querySelector('.body');
+  rb.appendChild(el('<div class="section-label">原始 HTTP 头</div>'));
+  rb.appendChild(el('<pre class="raw">'+(r.headStr?esc(r.headStr.split(String.fromCharCode(13)).join('')):'<span class="muted">(无 HTTP 头：该层直接记录 body，见下方 JSON)</span>')+'</pre>'));
+  if(r.json){
+    const cs=r.json.conversationState||{};
+    const um=cs.currentMessage&&cs.currentMessage.userInputMessage;
+    const content=um?um.content:(cs.currentMessage?JSON.stringify(cs.currentMessage):'');
+    const tools=r.json.toolSpecifications||cs.toolSpecifications||[];
+    rb.appendChild(el('<div class="section-label">上下文摘要</div>'));
+    rb.appendChild(el('<div class="facts">'+
+      fact('conversationId',cs.conversationId||r.json.conversationId||'?')+
+      fact('agentMode / taskType',(r.json.agentMode||'?')+' / '+(cs.agentTaskType||'?'))+
+      fact('chatTriggerType',cs.chatTriggerType||'?')+
+      fact('history 条数',Array.isArray(cs.history)?cs.history.length:'n/a')+
+      fact('toolSpecifications',Array.isArray(tools)?tools.length:'n/a')+
+      fact('profileArn',r.json.profileArn||'?')+
+      '</div>'));
+    if(content){rb.appendChild(el('<div class="section-label">currentMessage (用户输入 + 注入上下文)</div>'));
+      rb.appendChild(el('<div class="assistant" style="border-left-color:var(--accent)">'+esc(trunc(content,4000))+'</div>'));}
+    rb.appendChild(el('<div class="section-label">完整请求 JSON（可折叠）</div>'));
+    const jt=jsonTools(function(){return r.json;},'kiro_request_'+(r.ts||'').split(':').join('-').split('.').join('-')+'.json');
+    rb.appendChild(jt.bar);rb.appendChild(jt.pre);
+    const tree=document.createElement('div');jsonTree(null,r.json,tree,0);rb.appendChild(tree);
+  }else if(r.textBody){
+    rb.appendChild(el('<div class="section-label">请求正文（非 JSON）</div>'));
+    rb.appendChild(el('<pre class="raw">'+esc(trunc(r.textBody,20000))+'</pre>'));
+  }
+  if(r.err)rb.appendChild(el('<div class="badge err">解析错误: '+esc(r.err)+'</div>'));
+  sec.appendChild(rc);
+
+  // ---- RESPONSE card ----
+  if(!s){sec.appendChild(el('<div class="card"><h2>◀ RESPONSE</h2><div class="body muted">无匹配响应块</div></div>'));return;}
+  const crcBadge=s.frames
+    ?(s.crcAllOk?'<span class="badge ok">CRC32 VERIFIED · byte-for-byte lossless ('+s.frames.length+' frames)</span>'
+                :'<span class="badge err">CRC32 MISMATCH</span>')
+    :'<span class="badge info">非流式响应</span>';
+  const sc=el('<div class="card"><h2><span>◀ RESPONSE <span class="tag">'+esc(s.status||'')+'</span></span>'+
+    '<span>'+crcBadge+' <span class="tag" style="margin-left:8px">'+s.bodyBytes+'B · '+esc(s.enc)+(s.exact?' · <span style="color:var(--ok)">exact✓</span>':(s.hasEnc?' · <span style="color:var(--err)">长度不符</span>':' · <span class="muted">pretty-json(格式化,非逐字节)</span>'))+(s.chunked?' · de-chunked→'+s.esLen+'B':'')+'</span></span></h2><div class="body"></div></div>');
+  const sb=sc.querySelector('.body');
+  sb.appendChild(el('<div class="section-label">原始 HTTP 头</div>'));
+  sb.appendChild(el('<pre class="raw">'+(s.headStr?esc(s.headStr.split(String.fromCharCode(13)).join('')):'<span class="muted">(无 HTTP 头：该层直接记录 body，见下方 JSON)</span>')+'</pre>'));
+
+  if(s.frames){
+    // 关键事实
+    let modelId='',stop='',ctxUsage='',credits='',texts=[],reasoning=[],reasonSig='';
+    s.frames.forEach(f=>{
+      const p=f.payload||{};const et=(f.headers&&f.headers[':event-type'])||'';
+      if(p.modelId)modelId=p.modelId;
+      if(et==='assistantResponseEvent'&&typeof p.content==='string')texts.push(p.content);
+      if(et==='reasoningContentEvent'){if(p.text)reasoning.push(p.text);if(p.signature)reasonSig=p.signature;}
+      if(p.stopReason)stop=p.stopReason;
+      if(p.contextUsagePercentage!=null)ctxUsage=p.contextUsagePercentage;
+      if(p.usage!=null&&p.unit)credits=p.usage+' '+p.unit;
+    });
+    sb.appendChild(el('<div class="section-label">关键信息</div>'));
+    sb.appendChild(el('<div class="facts">'+fact('modelId',modelId||'?')+fact('stopReason',stop||'?')+
+      fact('contextUsage',ctxUsage?ctxUsage+'%':'?')+fact('metering',credits||'?')+'</div>'));
+    if(reasoning.length||reasonSig){
+      sb.appendChild(el('<div class="section-label">reasoning（推理）</div>'));
+      const joined=reasoning.join(String.fromCharCode(10));
+      const onlyDots=joined.split('.').join('').trim()==='';
+      if(onlyDots&&reasonSig){
+        sb.appendChild(el('<div class="assistant muted" style="border-left-color:var(--warn)">后端对本回合推理做了加密红脱：线上 text 仅为占位符「'+esc(joined.slice(0,12))+'」，明文思维链未传输。下方 signature 令牌由客户端在后续回合回传，以续接加密思考状态。</div>'));
+        const meta=decodeKtr(reasonSig);
+        if(meta)sb.appendChild(el('<div class="facts">'+fact('agentContinuationId',meta.agentContinuationId||'?')+fact('modelHash',meta.modelHash||'?')+fact('mintedAt',meta.mintedAt||'?')+fact('slots / v',((meta.slots&&meta.slots.length)||0)+' / '+(meta.v||'?'))+'</div>'));
+      }else{
+        sb.appendChild(el('<div class="assistant" style="border-left-color:var(--warn)">'+esc(joined.slice(0,4000))+'</div>'));
+        if(reasonSig){const meta2=decodeKtr(reasonSig);sb.appendChild(el('<div class="muted" style="font-size:11.5px;margin:0 0 10px;">另含加密 signature 令牌： '+esc(JSON.stringify(meta2||{}))+'</div>'));}
+      }
+    }
+    // toolUseEvent 为流式增量：起始帧{name,toolUseId} → 多帧{input:片段} → 结束帧{stop:true}，按 toolUseId 合并为完整调用
+    const toolCalls=[];const toolIdx={};
+    s.frames.forEach(function(f){
+      const p=f.payload||{};if(!f.headers||f.headers[':event-type']!=='toolUseEvent')return;
+      const id=p.toolUseId||('?'+toolCalls.length);
+      let c=toolIdx[id];
+      if(!c){c={name:p.name||'?',id:id,input:''};toolIdx[id]=c;toolCalls.push(c);}
+      if(typeof p.input==='string')c.input+=p.input;
+      if(p.name)c.name=p.name;
+      if(p.stop)c.stop=true;
+    });
+    if(toolCalls.length){
+      sb.appendChild(el('<div class="section-label">工具调用（toolUseEvent 合并 · '+toolCalls.length+'）</div>'));
+      toolCalls.forEach(function(c,i){
+        let inputObj=null;
+        if(c.input){try{inputObj=JSON.parse(c.input);}catch(e){}}
+        const card=el('<div class="frame"><div class="fh"><span class="muted">['+i+']</span><span class="et">'+esc(c.name)+'</span><span class="tag muted">'+esc(String(c.id).slice(0,28))+'</span>'+(c.stop?'<span class="crc ok">完整</span>':'<span class="crc bad">无 stop 帧</span>')+'<span class="tag muted">input '+c.input.length+'B</span></div><div class="fb"></div></div>');
+        const fb=card.querySelector('.fb');
+        if(inputObj){
+          const jt=jsonTools(function(){return inputObj;},'toolcall_'+i+'_'+(c.name||'tool')+'.json');
+          fb.appendChild(jt.bar);fb.appendChild(jt.pre);
+          const tr=document.createElement('div');jsonTree(null,inputObj,tr,1);fb.appendChild(tr);
+        }else if(c.input){
+          fb.appendChild(el('<pre class="raw">'+esc(trunc(c.input,4000))+'</pre>'));
+        }else{
+          fb.appendChild(el('<div class="muted" style="font-size:12px;">（无 input）</div>'));
+        }
+        sb.appendChild(card);
+      });
+    }
+    if(texts.length){sb.appendChild(el('<div class="section-label">assistant 回复（流式拼接）</div>'));
+      sb.appendChild(el('<div class="assistant">'+esc(texts.join(''))+'</div>'));}
+    // 帧列表
+    sb.appendChild(el('<div class="section-label">EventStream 帧（'+s.frames.length+'）</div>'));
+    s.frames.forEach((f,i)=>{
+      if(f.error){sb.appendChild(el('<div class="frame"><div class="fh"><span class="et">['+i+'] FRAME ERROR</span><span class="badge err">'+esc(f.error)+'</span></div></div>'));return;}
+      const et=(f.headers&&f.headers[':event-type'])||'?';
+      const fr=el('<div class="frame"><div class="fh"><span class="muted">['+i+']</span><span class="et">'+esc(et)+'</span>'+
+        '<span class="crc '+(f.preludeCrcOk?'ok':'bad')+'">prelude '+(f.preludeCrcOk?'OK':'FAIL')+'</span>'+
+        '<span class="crc '+(f.messageCrcOk?'ok':'bad')+'">msg '+(f.messageCrcOk?'OK':'FAIL')+'</span>'+
+        '<span class="tag muted">len='+f.totalLen+' hdr='+f.headersLen+' payload='+f.payloadLen+'</span></div><div class="fb"></div></div>');
+      const fb=fr.querySelector('.fb');
+      const hd=document.createElement('div');jsonTree(':headers',f.headers,hd,1);fb.appendChild(hd);
+      const pd=document.createElement('div');jsonTree('payload',f.payload,pd,1);fb.appendChild(pd);
+      sb.appendChild(fr);
+    });
+  }else if(s.json){
+    sb.appendChild(el('<div class="section-label">响应 JSON</div>'));
+    const jt2=jsonTools(function(){return s.json;},'kiro_response_'+(s.ts||'').split(':').join('-').split('.').join('-')+'.json');
+    sb.appendChild(jt2.bar);sb.appendChild(jt2.pre);
+    const tree=document.createElement('div');jsonTree(null,s.json,tree,0);sb.appendChild(tree);
+  }else if(s.textBody){
+    sb.appendChild(el('<div class="section-label">响应正文</div>'));
+    sb.appendChild(el('<pre class="raw">'+esc(trunc(s.textBody,20000))+'</pre>'));
+  }
+  if(s.err)sb.appendChild(el('<div class="badge err">解析错误: '+esc(s.err)+'</div>'));
+  sec.appendChild(sc);
+}
+function fact(k,v){return '<div class="fact"><span class="fk">'+esc(k)+'</span><span class="fv">'+esc(trunc(v,300))+'</span></div>';}
+// 解 .KTR~~<base64-json> 推理签名令牌的元数据
+function decodeKtr(sig){try{const i=String(sig).indexOf('~~');if(i<0)return null;const j=JSON.parse(atob(String(sig).slice(i+2)));if(j&&j.mintedAtMs)j.mintedAt=new Date(j.mintedAtMs).toLocaleString();return j;}catch(e){return null;}}
+
+// ============================ 文件读取 / 刷新 ============================
+let fileHandle=null,currentFile=null,currentName='';
+const supportsFS=('showOpenFilePicker' in window);
+
+function setInfo(name,file,extra){
+  const sz=file&&file.size!=null?(file.size+' B'):'';
+  const mt=file&&file.lastModified?new Date(file.lastModified).toLocaleTimeString():'';
+  $('fileInfo').innerHTML='<b>'+esc(name||'')+'</b>'+(sz?' · '+sz:'')+(mt?' · '+mt:'')+(extra?' · '+extra:'')+
+    (supportsFS?'':' · <span class="muted">(此浏览器不支持句柄刷新)</span>');
+}
+async function renderFromText(text,file){
+  TXS=parseLog(text);
+  const firstGen=TXS.findIndex(t=>t.req.isGen);
+  if(SEL<0||SEL>=TXS.length)SEL=firstGen>=0?firstGen:(TXS.length?0:-1);
+  renderTxList();renderDetail();
+  const gen=TXS.filter(t=>t.req.isGen).length;
+  setInfo(currentName,file,TXS.length+' 事务 / '+gen+' 模型请求');
+  $('btnRefresh').disabled=false;
+}
+async function openFile(){
+  if(supportsFS){
+    try{
+      const [h]=await window.showOpenFilePicker({multiple:false,types:[{description:'Kiro log',accept:{'text/plain':['.log','.txt']}}]});
+      fileHandle=h;currentName=h.name;
+      const f=await h.getFile();await renderFromText(await f.text(),f);
+      recordRecent(h.name,f,h);
+      return;
+    }catch(e){if(e&&e.name==='AbortError')return;/* 降级 */}
+  }
+  $('fileInput').click();
+}
+async function refresh(){
+  try{
+    if(fileHandle){const f=await fileHandle.getFile();await renderFromText(await f.text(),f);}
+    else if(currentFile){const text=await currentFile.text();await renderFromText(text,currentFile);}
+  }catch(e){setInfo(currentName,currentFile,'刷新失败: '+e.message);}
+}
+
+// ============================ 最近打开的文件（保留 5 条） ============================
+const RECENT_MAX=5;
+const META_KEY='kirolog_recent_meta';
+function metaLoad(){try{const a=JSON.parse(localStorage.getItem(META_KEY)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function metaSave(list){try{localStorage.setItem(META_KEY,JSON.stringify(list.slice(0,RECENT_MAX)));}catch(e){}}
+// IndexedDB 存 FileSystemFileHandle（Chromium 支持），用于一键重开；不可用时自动降级
+function idbOpen(){return new Promise(function(res,rej){try{const rq=indexedDB.open('kirolog-viewer',1);rq.onupgradeneeded=function(){const db=rq.result;if(!db.objectStoreNames.contains('handles'))db.createObjectStore('handles');};rq.onsuccess=function(){res(rq.result);};rq.onerror=function(){rej(rq.error);};}catch(e){rej(e);}});}
+function idbPut(name,handle){if(!handle)return Promise.resolve();return idbOpen().then(function(db){return new Promise(function(res){try{const tx=db.transaction('handles','readwrite');tx.objectStore('handles').put(handle,name);tx.oncomplete=function(){res();};tx.onerror=function(){res();};}catch(e){res();}});}).catch(function(){});}
+function idbGet(name){return idbOpen().then(function(db){return new Promise(function(res){try{const tx=db.transaction('handles','readonly');const rq=tx.objectStore('handles').get(name);rq.onsuccess=function(){res(rq.result||null);};rq.onerror=function(){res(null);};}catch(e){res(null);}});}).catch(function(){return null;});}
+function idbDel(name){return idbOpen().then(function(db){return new Promise(function(res){try{const tx=db.transaction('handles','readwrite');tx.objectStore('handles').delete(name);tx.oncomplete=function(){res();};tx.onerror=function(){res();};}catch(e){res();}});}).catch(function(){});}
+function recordRecent(name,file,handle){
+  const list=metaLoad().filter(function(m){return m.name!==name;});
+  list.unshift({name:name,size:(file&&file.size!=null)?file.size:null,lm:(file&&file.lastModified)?file.lastModified:null,at:Date.now()});
+  metaSave(list);
+  idbPut(name,handle);
+  renderRecent();
+}
+function fmtWhen(ts){try{return new Date(ts).toLocaleString();}catch(e){return '';}}
+function renderRecent(){
+  const dd=$('ddRecent');const list=metaLoad();
+  dd.innerHTML='';
+  if(!list.length){dd.appendChild(el('<div class="dd-empty">暂无打开记录（打开日志后自动记录最近 '+RECENT_MAX+' 个）</div>'));return;}
+  list.forEach(function(m){
+    const item=document.createElement('div');item.className='dd-item';
+    const main=document.createElement('div');main.className='dd-main';
+    main.innerHTML='<div class="dd-name">'+esc(m.name)+'</div><div class="dd-meta muted">'+esc(fmtWhen(m.at))+((m.size!=null)?' · '+m.size+'B':'')+'</div>';
+    main.onclick=function(){openRecent(m.name);};
+    const rm=document.createElement('button');rm.className='dd-rm';rm.textContent='×';rm.title='移除该记录';
+    rm.onclick=function(ev){ev.stopPropagation();metaSave(metaLoad().filter(function(x){return x.name!==m.name;}));idbDel(m.name);renderRecent();};
+    item.appendChild(main);item.appendChild(rm);
+    dd.appendChild(item);
+  });
+}
+async function openRecent(name){
+  let handle=null;
+  try{handle=await idbGet(name);}catch(e){}
+  if(handle&&handle.getFile){
+    try{
+      let perm='granted';
+      if(handle.queryPermission)perm=await handle.queryPermission({mode:'read'});
+      if(perm!=='granted'&&handle.requestPermission)perm=await handle.requestPermission({mode:'read'});
+      if(perm==='granted'){
+        const f=await handle.getFile();
+        fileHandle=handle;currentName=name;
+        await renderFromText(await f.text(),f);
+        recordRecent(name,f,handle);
+        ddClose();
+        return;
+      }
+    }catch(e){}
+  }
+  setInfo(currentName,currentFile,'无法自动恢复「'+name+'」的句柄（浏览器安全限制），请点「选择日志文件…」手动重选同名文件');
+  $('fileInput').click();
+}
+function ddToggle(){const dd=$('ddRecent');if(dd.style.display==='block'){dd.style.display='none';}else{renderRecent();dd.style.display='block';}}
+function ddClose(){$('ddRecent').style.display='none';}
+$('btnOpen').onclick=openFile;
+$('btnRefresh').onclick=refresh;
+$('btnRecent').onclick=function(e){e.stopPropagation();ddToggle();};
+$('searchInput').addEventListener('input',function(e){QUERY=e.target.value||'';renderTxList();});
+$('searchInput').addEventListener('keydown',function(e){if(e.key==='Escape'){e.target.value='';QUERY='';renderTxList();}});
+document.addEventListener('click',function(e){
+  const dd=$('ddRecent');if(dd.style.display!=='block')return;
+  let n=e.target,inDd=false;
+  while(n){if(n.id==='ddRecent'||n.id==='btnRecent'){inDd=true;break;}n=n.parentElement;}
+  if(!inDd)dd.style.display='none';
+});
+renderRecent();
+$('fileInput').addEventListener('change',async e=>{
+  const f=e.target.files[0];if(!f)return;
+  currentFile=f;currentName=f.name;fileHandle=null;
+  await renderFromText(await f.text(),f);
+  recordRecent(f.name,f,null);
+});
+let autoTimer=null;
+$('chkAuto').addEventListener('change',e=>{
+  if(e.target.checked){autoTimer=setInterval(refresh,2000);}
+  else if(autoTimer){clearInterval(autoTimer);autoTimer=null;}
+});
+// 键盘：R 刷新
+document.addEventListener('keydown',e=>{
+  if((e.key==='r'||e.key==='R')&&!e.ctrlKey&&!e.metaKey&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)&&!$('btnRefresh').disabled)refresh();
+});
+</script>
+</body>
+</html>
