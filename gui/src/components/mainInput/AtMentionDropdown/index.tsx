@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import {
   ArrowRightIcon,
   AtSymbolIcon,
@@ -163,7 +164,7 @@ const AtMentionDropdown = forwardRef((props: AtMentionDropdownProps, ref) => {
 
   const ideMessenger = useContext(IdeMessengerContext);
   const isInAgentMode = useAppSelector(
-    (store) => store.session.mode === "agent",
+    (store) => selectActiveSession(store).mode === "agent",
   );
 
   const [selectedIndex, setSelectedIndex] = useState(0);

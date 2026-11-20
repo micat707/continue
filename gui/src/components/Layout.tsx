@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../redux/slices/sessionSlice";
 import { OnboardingModes } from "core/protocol/core";
 import { useContext, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -53,7 +54,9 @@ const Layout = () => {
   const dialogMessage = useAppSelector((state) => state.ui.dialogMessage);
 
   const showDialog = useAppSelector((state) => state.ui.showDialog);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const isHome =
     location.pathname === ROUTES.HOME ||
     location.pathname === ROUTES.HOME_INDEX;

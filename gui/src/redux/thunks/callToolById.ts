@@ -1,3 +1,8 @@
+import {
+  inSession,
+  selectActiveSession,
+  selectSessionById,
+} from "../slices/sessionSlice";
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
 import { ContextItem, McpUiState } from "core";
 import { CLIENT_TOOLS_IMPLS } from "core/tools/builtIn";
@@ -18,13 +23,24 @@ import { streamResponseAfterToolCall } from "./streamResponseAfterToolCall";
 
 export const callToolById = createAsyncThunk<
   void,
-  { toolCallId: string; isAutoApproved?: boolean; depth?: number },
+  {
+    toolCallId: string;
+    isAutoApproved?: boolean;
+    depth?: number;
+    sessionId?: string;
+  },
   ThunkApiType
 >("chat/callTool", async (inputs, { dispatch, extra, getState }) => {
-  const { toolCallId, isAutoApproved, depth = 0 } = inputs;
+  const { toolCallId, isAutoApproved, depth = 0, sessionId } = inputs;
 
   const state = getState();
-  const toolCallState = findToolCallById(state.session.history, toolCallId);
+  // When a background session executes a tool, read its own history rather
+  // than the active session's, so the tool call state resolves correctly.
+  const owner = sessionId
+    ? selectSessionById(state, sessionId)
+    : selectActiveSession(state);
+  const owningSessionId = sessionId ?? owner.id;
+  const toolCallState = findToolCallById(owner.history, toolCallId);
   if (!toolCallState) {
     console.warn(`Tool call with ID ${toolCallId} not found`);
     return;
@@ -41,9 +57,12 @@ export const callToolById = createAsyncThunk<
   }
 
   dispatch(
-    setToolCallCalling({
-      toolCallId,
-    }),
+    inSession(
+      setToolCallCalling({
+        toolCallId,
+      }),
+      owningSessionId,
+    ),
   );
 
   const toolName = toolCallState.toolCall.function.name;
@@ -111,44 +130,42 @@ export const callToolById = createAsyncThunk<
 
   if (error) {
     dispatch(
-      updateToolCallOutput({
-        toolCallId,
-        contextItems: [
-          {
-            icon: "problems",
-            name: "Tool Call Error",
-            description: "Tool Call Failed",
-            content: `${toolCallState.toolCall.function.name} failed with the message: ${error.message}\n\nPlease try something else or request further instructions.`,
-            hidden: false,
-          },
-        ],
-      }),
+      inSession(
+        updateToolCallOutput({
+          toolCallId,
+          contextItems: [
+            {
+              icon: "problems",
+              name: "Tool Call Error",
+              description: "Tool Call Failed",
+              content: `${toolCallState.toolCall.function.name} failed with the message: ${error.message}\n\nPlease try something else or request further instructions.`,
+              hidden: false,
+            },
+          ],
+        }),
+        owningSessionId,
+      ),
     );
   } else if (output?.length) {
     dispatch(
-      updateToolCallOutput({
-        toolCallId,
-        contextItems: output,
-        mcpUiState,
-      }),
+      inSession(
+        updateToolCallOutput({
+          toolCallId,
+          contextItems: output,
+          mcpUiState,
+        }),
+        owningSessionId,
+      ),
     );
   }
 
   if (streamResponse) {
     if (error) {
       logToolUsage(toolCallState, false, false, extra.ideMessenger, output);
-      dispatch(
-        errorToolCall({
-          toolCallId,
-        }),
-      );
+      dispatch(inSession(errorToolCall({ toolCallId }), owningSessionId));
     } else {
       logToolUsage(toolCallState, true, true, extra.ideMessenger, output);
-      dispatch(
-        acceptToolCall({
-          toolCallId,
-        }),
-      );
+      dispatch(inSession(acceptToolCall({ toolCallId }), owningSessionId));
     }
 
     // Send to the LLM to continue the conversation
@@ -156,6 +173,7 @@ export const callToolById = createAsyncThunk<
       streamResponseAfterToolCall({
         toolCallId,
         depth: depth + 1,
+        sessionId: owningSessionId,
       }),
     );
     unwrapResult(wrapped);
@@ -171,6 +189,6 @@ export const callToolById = createAsyncThunk<
     // (Every current respondImmediately:false client tool is an edit tool that
     // always dispatches an apply, so the turn is guaranteed to be continued —
     // or failed-and-continued — by the apply flow.)
-    dispatch(setPendingContinuation(true));
+    dispatch(inSession(setPendingContinuation(true), owningSessionId));
   }
 });

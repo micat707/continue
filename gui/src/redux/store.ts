@@ -19,7 +19,8 @@ import configReducer from "./slices/configSlice";
 import editModeStateReducer from "./slices/editState";
 import indexingReducer from "./slices/indexingSlice";
 import { profilesReducer } from "./slices/profilesSlice";
-import sessionReducer from "./slices/sessionSlice";
+import sessionReducer, { createSessionData } from "./slices/sessionSlice";
+import { NEW_SESSION_TITLE } from "core/util/constants";
 import tabsReducer from "./slices/tabsSlice";
 import uiReducer from "./slices/uiSlice";
 
@@ -35,24 +36,12 @@ const rootReducer = combineReducers({
 
 const saveSubsetFilters = [
   createFilter("session", [
-    "id",
+    // Multi-session store: persist only serializable, authoritative fields.
+    // `sessions` histories keep the live view intact across webview reloads;
+    // AbortControllers are stripped by `sessionAborterTransform` below.
+    "sessions",
+    "activeSessionId",
     "lastSessionId",
-    "title",
-
-    // Persist edit mode in case closes in middle
-    "mode",
-
-    // Persist the actual conversation. Without this, a webview reload (crash,
-    // window refresh, extension reload) wipes the in-memory history and the
-    // user sees the conversation "cleared" — while no newSession is ever
-    // dispatched, which is why the trace never fired. The IDE-side disk copy
-    // remains the source of truth; this just keeps the live view intact across
-    // reloads.
-    "history",
-
-    // higher risk to persist
-    // codeBlockApplyStates
-    // symbols
   ]),
   createFilter("editModeState", [
     "returnToMode",
@@ -71,7 +60,63 @@ const saveSubsetFilters = [
   createFilter("profiles", ["preferencesByProfileId", "selectedProfileId"]),
 ];
 
+/**
+ * AbortControllers are class instances that survive JSON round-trips as `{}`.
+ * Strip them to storage and rebuild fresh ones on rehydrate so a restored chat
+ * can still be stopped.
+ */
+const sessionAborterTransform = {
+  in: (state: any) => {
+    if (!state?.session?.sessions) return state;
+    const sessions: Record<string, any> = {};
+    for (const [id, data] of Object.entries(state.session.sessions) as any) {
+      const { streamAborter, streamAborters, ...rest } = data as any;
+      sessions[id] = rest;
+    }
+    return { ...state, session: { ...state.session, sessions } };
+  },
+  out: (state: any) => {
+    if (!state?.session?.sessions) return state;
+    const sessions: Record<string, any> = {};
+    for (const [id, data] of Object.entries(state.session.sessions) as any) {
+      sessions[id] = {
+        ...(data as any),
+        streamAborter: new AbortController(),
+        streamAborters: {},
+      };
+    }
+    return { ...state, session: { ...state.session, sessions } };
+  },
+};
+
 const migrations: MigrationManifest = {
+  // v2: state.session changed from a flat session object to a multi-session
+  // store ({ sessions, activeSessionId, ... }). Old persisted flat fields are
+  // incompatible; drop them and let initialState/loadLastSession rebuild.
+  "2": (state) => {
+    const old = state as any;
+    const prevSession = old?.session ?? {};
+    const id: string = prevSession.id || "";
+    const activeId = id || "migrated-session";
+    return {
+      ...old,
+      session: {
+        sessions: {
+          [activeId]: {
+            ...createSessionData(activeId),
+            title: prevSession.title ?? NEW_SESSION_TITLE,
+            history: prevSession.history ?? [],
+            mode: prevSession.mode ?? "agent",
+            lastSessionId: prevSession.lastSessionId,
+          },
+        },
+        activeSessionId: activeId,
+        lastSessionId: prevSession.lastSessionId,
+        isSessionMetadataLoading: false,
+        allSessionMetadata: [],
+      },
+    };
+  },
   "0": (state) => {
     const oldState = state as any;
 
@@ -98,10 +143,10 @@ const migrations: MigrationManifest = {
 };
 
 const persistConfig = {
-  version: 1,
+  version: 2,
   key: "root",
   storage,
-  transforms: [...saveSubsetFilters],
+  transforms: [...saveSubsetFilters, sessionAborterTransform as any],
   stateReconciler: autoMergeLevel2,
   migrate: createMigrate(migrations, { debug: false }),
 };

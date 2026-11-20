@@ -17,6 +17,7 @@ import {
 } from "../../redux/slices/profilesSlice";
 import sessionReducer, {
   INITIAL_SESSION_STATE,
+  createSessionData,
 } from "../../redux/slices/sessionSlice";
 import tabsReducer, { INITIAL_TABS_STATE } from "../../redux/slices/tabsSlice";
 import uiReducer, { DEFAULT_UI_SLICE } from "../../redux/slices/uiSlice";
@@ -32,21 +33,28 @@ export const getEmptyRootState: () => RootState = () => {
     profiles: INITIAL_PROFILES_STATE,
     tabs: INITIAL_TABS_STATE,
   };
-  const { streamAborter, ...serializableSession } = INITIAL_SESSION_STATE;
-  const sessionCopy = copyOf(serializableSession) as Omit<
-    RootState["session"],
-    "streamAborter"
-  >;
   const withoutSessionCopy = copyOf(withoutSession) as Omit<
     RootState,
     "session"
   >;
+  // Each SessionData owns a non-serializable AbortController; rebuild it after
+  // the structural copy instead of letting `copyOf` shallow-share it.
+  const sessions: Record<string, any> = {};
+  for (const [id, data] of Object.entries(INITIAL_SESSION_STATE.sessions)) {
+    sessions[id] = {
+      ...copyOf(data),
+      streamAborter: new AbortController(),
+      streamAborters: {},
+    };
+  }
   return {
     ...withoutSessionCopy,
     session: {
-      ...sessionCopy,
-      streamAborter: new AbortController(),
-    },
+      activeSessionId: INITIAL_SESSION_STATE.activeSessionId,
+      isSessionMetadataLoading: false,
+      allSessionMetadata: [],
+      sessions,
+    } as RootState["session"],
   };
 };
 

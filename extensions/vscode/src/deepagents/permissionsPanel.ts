@@ -21,7 +21,7 @@ import {
 } from "./permissions";
 import { loadGlobalConfig, loadWorkspaceConfig } from "./permissionStore";
 import { getWorkspaceFolders } from "./workspaceBackend";
-import { activeSessionPermissions } from "./DeepAgentLLM";
+import { getSessionPermissionHandle } from "./DeepAgentLLM";
 import { getExtensionUri, getNonce } from "../util/vscode";
 
 const SETTING_KEY = "deepAgent.permissions";
@@ -65,16 +65,18 @@ function serializeMerged(m: ReturnType<typeof mergeRules>) {
  * Build the full three-layer permission state shared by both UIs (the inline
  * GUI settings section and the standalone webview panel).
  */
-export function buildPermissionsState(): DeepAgentPermissionsState {
+export function buildPermissionsState(
+  sessionId?: string,
+): DeepAgentPermissionsState {
   const globalCfg = loadGlobalConfig();
   const wsCfg = loadWorkspaceConfig();
-  const sessionPolicy =
-    activeSessionPermissions.impl?.getSessionPolicy() ?? EMPTY_CONFIG;
+  const handle = getSessionPermissionHandle(sessionId);
+  const sessionPolicy = handle?.getSessionPolicy() ?? EMPTY_CONFIG;
   const merged = mergeRules(globalCfg, wsCfg, sessionPolicy);
   return {
     global: globalCfg,
     workspace: wsCfg ?? EMPTY_CONFIG,
-    session: activeSessionPermissions.impl?.getMemory() ?? {
+    session: handle?.getMemory() ?? {
       approved: [],
       readApproved: [],
       denied: [],
@@ -155,7 +157,9 @@ export class PermissionsPanel {
         break;
       }
       case "clearSession":
-        activeSessionPermissions.impl?.clear();
+        // Standalone panel has no session context; clear the most recently
+        // used session (the one whose memory the panel is displaying).
+        getSessionPermissionHandle()?.clear();
         this.sendState();
         break;
     }

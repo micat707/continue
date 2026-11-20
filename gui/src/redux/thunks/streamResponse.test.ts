@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { JSONContent } from "@tiptap/core";
 import {
   AssistantChatMessage,
@@ -103,13 +104,13 @@ beforeEach(() => {
 describe("streamResponseThunk", () => {
   it("should execute complete streaming flow with all dispatches", async () => {
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: { id: "1", role: "user", content: "Hello" },
         contextItems: [],
       },
     ];
-    initialState.session.id = "session-123";
+    selectActiveSession(initialState).id = "session-123";
     const mockStore = createMockStore(initialState);
     const mockIdeMessenger = mockStore.mockIdeMessenger;
 
@@ -470,7 +471,7 @@ describe("streamResponseThunk", () => {
   it("should execute streaming flow with tool call execution", async () => {
     // Set up auto-approved tool setting for our test tool
     const stateWithToolSettings = getRootStateWithClaude();
-    stateWithToolSettings.session.history = [
+    selectActiveSession(stateWithToolSettings).history = [
       {
         message: {
           id: "1",
@@ -487,7 +488,7 @@ describe("streamResponseThunk", () => {
     stateWithToolSettings.ui.toolSettings = {
       [grepName]: "allowedWithoutPermission", // Auto-approve this tool
     };
-    stateWithToolSettings.session.id = "session-123";
+    selectActiveSession(stateWithToolSettings).id = "session-123";
     const mockStoreWithToolSettings = createMockStore(stateWithToolSettings);
 
     const mockIdeMessengerWithTool = mockStoreWithToolSettings.mockIdeMessenger;
@@ -879,14 +880,14 @@ describe("streamResponseThunk", () => {
 
     // Create store with our test abort controller, starting from setupTest config
     const abortState = getRootStateWithClaude();
-    abortState.session.streamAborter = testAbortController;
-    abortState.session.history = [
+    selectActiveSession(abortState).streamAborter = testAbortController;
+    selectActiveSession(abortState).history = [
       {
         message: { id: "1", role: "user", content: "Hello" },
         contextItems: [],
       },
     ];
-    abortState.session.id = "session-123";
+    selectActiveSession(abortState).id = "session-123";
     const mockStoreWithAbort = createMockStore(abortState);
     const mockIdeMessengerAbort = mockStoreWithAbort.mockIdeMessenger;
     mockIdeMessengerAbort.responses["llm/compileChat"] = {

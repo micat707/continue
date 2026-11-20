@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { useMemo, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "../../redux/hooks";
 import { saveCurrentSession } from "../../redux/thunks/session";
@@ -7,16 +8,18 @@ import { ToolTip } from "../gui/Tooltip";
 const ContextStatus = () => {
   const dispatch = useAppDispatch();
   const contextPercentage = useAppSelector(
-    (state) => state.session.contextPercentage,
+    (state) => selectActiveSession(state).contextPercentage,
   );
   const selectedChatModel = useAppSelector(
     (state) => state.config.config.selectedModelByRole.chat?.model,
   );
   const previousHistoryLength = useRef<number | null>(null);
   const previousSelectedChatModel = useRef<string | null>(null);
-  const history = useAppSelector((state) => state.session.history);
+  const history = useAppSelector((state) => selectActiveSession(state).history);
   const percent = Math.round((contextPercentage ?? 0) * 100);
-  const isPruned = useAppSelector((state) => state.session.isPruned);
+  const isPruned = useAppSelector(
+    (state) => selectActiveSession(state).isPruned,
+  );
 
   const isDifferentModelAndSameHistory = useMemo(() => {
     if (!selectedChatModel) return false;

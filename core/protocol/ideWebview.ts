@@ -76,7 +76,7 @@ export type ToIdeFromWebviewProtocol = ToIdeFromWebviewOrCoreProtocol & {
   /** Consolidated list of all files changed in the workspace (one record per
    *  file, multiple edits collapsed) — used for the end-of-session summary. */
   getChangedFiles: [
-    {},
+    { sessionId?: string },
     { filepath: string; originalContent?: string; newContent?: string }[],
   ];
   "edit/sendPrompt": [
@@ -99,22 +99,32 @@ export type ToIdeFromWebviewProtocol = ToIdeFromWebviewOrCoreProtocol & {
     {
       /** Matches the `requestId` of the originating `deepAgentInterrupt`. */
       requestId: string;
+      /** Owning chat session id; lets the IDE resolve the pending request for
+       *  this session specifically instead of clearing all sessions. */
+      sessionId?: string;
       decisions: Array<{ id: string; type: "approve" | "reject" }>;
     },
     void,
   ];
   /** GUI → IDE: read the full DeepAgent tool-permission state (3 layers). */
-  "deepAgent/permissions/getState": [undefined, DeepAgentPermissionsState];
+  "deepAgent/permissions/getState": [
+    { sessionId?: string } | undefined,
+    DeepAgentPermissionsState,
+  ];
   /** GUI → IDE: persist one policy layer (global → user settings, workspace → workspace settings). */
   "deepAgent/permissions/updateLayer": [
     {
       layer: "global" | "workspace";
       config: DeepAgentPermissionConfig;
+      sessionId?: string;
     },
     DeepAgentPermissionsState,
   ];
   /** GUI → IDE: clear the current chat's session permission memory. */
-  "deepAgent/permissions/clearSession": [undefined, DeepAgentPermissionsState];
+  "deepAgent/permissions/clearSession": [
+    { sessionId?: string } | undefined,
+    DeepAgentPermissionsState,
+  ];
   /**
    * GUI → IDE: open the Continue GUI as a full editor-area tab (the sidebar
    * webview is too narrow for the config pages). `page` is an in-app route
@@ -204,7 +214,7 @@ export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
       /** The chat session that owns this interrupt. Used by the GUI to show the
        * approval card only in its originating session, not whichever chat is
        * currently displayed when the message arrives. */
-      chatSessionId?: string;
+      sessionId?: string;
       request: {
         actionRequests?: Array<{
           name?: string;

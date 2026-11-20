@@ -79,12 +79,14 @@ const TOOL_DISPLAY_TO_ID: Record<string, string> = Object.fromEntries(
   Object.entries(TOOL_ID_TO_DISPLAY).map(([id, display]) => [display, id]),
 );
 
-// The raw wire-level (provider-format) request/response logger lives in core,
-// but the on-disk writer (`logLlmIo`) is extension-only. We bridge them here:
-// the most recently created adapter's sessionId tags each raw entry so the
-// viewer can group them with the corresponding REQUEST/RESPONSE dumps.
+// The raw wire-level (provider-format) logger lives in core but the on-disk
+// writer (`logLlmIo`) is extension-only, so we bridge it once. NOTE: this is a
+// single global sink with signature (section, body) — it has no way to know
+// which adapter/session produced an entry, so it deliberately does NOT stamp a
+// session id. Per-session attribution lives in `logApiJson` below, which uses
+// this instance's own `sessionId` (see #currentSessionId removal: a module-level
+// "latest adapter wins" id previously mislabelled every raw entry).
 let rawApiLoggerRegistered = false;
-let currentSessionId = "";
 
 export interface ContinueLLMAdapterOptions {
   /** The Continue LLM instance that actually talks to the model. */
@@ -150,12 +152,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
     super({});
     this.llm = fields.llm;
     this.systemContext = fields.systemContext;
-    currentSessionId = this.sessionId;
     if (!rawApiLoggerRegistered) {
       rawApiLoggerRegistered = true;
-      registerRawApiLogger((section, body) =>
-        logLlmIo(section, body, undefined, currentSessionId),
-      );
+      registerRawApiLogger((section, body) => logLlmIo(section, body));
     }
   }
 
@@ -740,28 +739,26 @@ export class ContinueLLMAdapter extends BaseChatModel {
 
     // ---- Debug: dump what we send to the model ----
     const systemMsg = continueMessages.find((m) => m.role === "system");
-    "sessionId:",
-      this.sessionId,
-      ContinueLLMAdapter.logDebug(
-        "================= DeepAgent request =================",
-        "model:",
-        this.llm.model,
-        "systemPrompt:",
-        systemMsg ? JSON.stringify(systemMsg.content).slice(0, 4000) : "(none)",
-        "TOOLS sent to model (name + parameters):",
-        JSON.stringify(
-          (completionOptions.tools ?? []).map((t) => ({
-            name: t.function.name,
-            parameters: t.function.parameters,
-          })),
-          null,
-          2,
-        ),
-        "numMessages:",
-        continueMessages.length,
-        "maxTokens:",
-        completionOptions.maxTokens,
-      );
+    ContinueLLMAdapter.logDebug(
+      "================= DeepAgent request =================",
+      "model:",
+      this.llm.model,
+      "systemPrompt:",
+      systemMsg ? JSON.stringify(systemMsg.content).slice(0, 4000) : "(none)",
+      "TOOLS sent to model (name + parameters):",
+      JSON.stringify(
+        (completionOptions.tools ?? []).map((t) => ({
+          name: t.function.name,
+          parameters: t.function.parameters,
+        })),
+        null,
+        2,
+      ),
+      "numMessages:",
+      continueMessages.length,
+      "maxTokens:",
+      completionOptions.maxTokens,
+    );
 
     // Retry loop: a stalled stream (no data for MODEL_STREAM_STALL_MS ⇒ local
     // abort ⇒ throw) or an empty/degenerate response is auto-retried up to

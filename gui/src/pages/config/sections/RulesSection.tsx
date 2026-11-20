@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { parseConfigYaml } from "@continuedev/config-yaml";
 import {
   ArrowsPointingOutIcon,
@@ -420,7 +421,7 @@ const globalRulesOptions = [
 function RulesSubSection() {
   const { selectedProfile } = useAuth();
   const config = useAppSelector((store) => store.config.config);
-  const mode = useAppSelector((store) => store.session.mode);
+  const mode = useAppSelector((store) => selectActiveSession(store).mode);
   const ideMessenger = useContext(IdeMessengerContext);
   const dispatch = useAppDispatch();
   const [globalRulesMode, setGlobalRulesMode] = useState<string>("workspace");

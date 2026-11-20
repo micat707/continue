@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { ctxItemToRifWithContents } from "core/commands/util";
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useRemark } from "react-remark";
@@ -209,8 +210,10 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
   // The logic here is to get file names from
   // 1. Context items found in past messages
   // 2. Toolbar Codeblocks found in past messages
-  const history = useAppSelector((state) => state.session.history);
-  const allSymbols = useAppSelector((state) => state.session.symbols);
+  const history = useAppSelector((state) => selectActiveSession(state).history);
+  const allSymbols = useAppSelector(
+    (state) => selectActiveSession(state).symbols,
+  );
   const pastFileInfo = useMemo(() => {
     const index = props.itemIndex;
     if (index === undefined) {

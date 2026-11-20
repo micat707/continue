@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { Editor, JSONContent } from "@tiptap/react";
 import {
   ContextItemWithId,
@@ -61,14 +62,18 @@ const EDIT_ALLOWED_SLASH_COMMAND_SOURCES: SlashCommandSource[] = [
 ];
 
 function ContinueInputBox(props: ContinueInputBoxProps) {
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
   const availableSlashCommands = useAppSelector(
     selectSlashCommandComboBoxInputs,
   );
   const availableContextProviders = useAppSelector(
     (state) => state.config.config.contextProviders,
   );
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const editModeState = useAppSelector((state) => state.editModeState);
 
   const filteredSlashCommands = useMemo(() => {

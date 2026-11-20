@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { Editor } from "@tiptap/react";
 import { InputModifiers } from "core";
 import { rifWithContentsToContextItem } from "core/commands/util";
@@ -35,7 +36,9 @@ export function useMainEditorWebviewListeners({
   const useCurrentFileAsContext = useAppSelector(
     (state) => state.config.config.experimental?.useCurrentFileAsContext,
   );
-  const isInEdit = useAppSelector((state) => state.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (state) => selectActiveSession(state).isInEdit,
+  );
 
   useWebviewListener(
     "isContinueInputFocused",

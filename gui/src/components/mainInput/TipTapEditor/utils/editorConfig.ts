@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../../redux/slices/sessionSlice";
 import { Editor, JSONContent } from "@tiptap/core";
 import Document from "@tiptap/extension-document";
 import History from "@tiptap/extension-history";
@@ -85,11 +86,17 @@ export function createEditorConfig(options: {
 
   const { getSubmenuContextItems } = useSubmenuContextProviders();
   const defaultModel = useAppSelector(selectSelectedChatModel);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
   const useActiveFile = useAppSelector(selectUseActiveFile);
-  const historyLength = useAppSelector((store) => store.session.history.length);
+  const historyLength = useAppSelector(
+    (store) => selectActiveSession(store).history.length,
+  );
   const codeToEdit = useAppSelector((store) => store.editModeState.codeToEdit);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const isInEditRef = useUpdatingRef(isInEdit);
 
   const inSubmenuRef = useRef<string | undefined>(undefined);

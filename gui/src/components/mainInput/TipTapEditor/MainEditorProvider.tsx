@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { Editor } from "@tiptap/react";
 import { InputModifiers } from "core";
 import React, {
@@ -50,11 +51,13 @@ export const MainEditorProvider: React.FC<{ children: React.ReactNode }> = ({
   const [inputId, setInputId] = useState<string | null>(initialState.inputId);
   const onEnterRef = useRef<(modifiers: InputModifiers) => void>(() => {});
   const editorFocusedRef = useRef<boolean>(false);
-  const historyLength = useAppSelector((store) => store.session.history.length);
+  const historyLength = useAppSelector(
+    (store) => selectActiveSession(store).history.length,
+  );
 
   // Listen for changes to mainEditorContentTrigger in Redux
   const mainEditorContentTrigger = useAppSelector(
-    (store) => store.session.mainEditorContentTrigger,
+    (store) => selectActiveSession(store).mainEditorContentTrigger,
   );
 
   useEffect(() => {

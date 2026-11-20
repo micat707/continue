@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { createAsyncThunk } from "@reduxjs/toolkit";
 import { JSONContent } from "@tiptap/core";
 import {
@@ -80,7 +81,7 @@ export const exitEdit = createAsyncThunk<
 >("edit/exit", async ({ openNewSession }, { dispatch, extra, getState }) => {
   const state = getState();
   const codeToEdit = state.editModeState.codeToEdit;
-  const isInEdit = state.session.isInEdit;
+  const isInEdit = selectActiveSession(state).isInEdit;
   const previousModeEditorContent =
     state.editModeState.previousModeEditorContent;
 
@@ -123,7 +124,7 @@ export const enterEdit = createAsyncThunk<
   "edit/enter",
   async ({ returnToMode, editorContent }, { dispatch, extra, getState }) => {
     const state = getState();
-    const isInEdit = state.session.isInEdit;
+    const isInEdit = selectActiveSession(state).isInEdit;
 
     if (isInEdit) {
       return;
@@ -140,7 +141,9 @@ export const enterEdit = createAsyncThunk<
     dispatch(setMainEditorContentTrigger({}));
     dispatch(setPreviousModeEditorContent(editorContent));
 
-    dispatch(setReturnToModeAfterEdit(returnToMode ?? state.session.mode));
+    dispatch(
+      setReturnToModeAfterEdit(returnToMode ?? selectActiveSession(state).mode),
+    );
     dispatch(updateEditStateApplyState(INITIAL_EDIT_APPLY_STATE));
 
     await dispatch(

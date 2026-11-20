@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { ChatHistoryItem } from "core";
 import { useEffect, useState } from "react";
 import { useAppSelector } from "../../redux/hooks";
@@ -23,7 +24,9 @@ const ThinkingIndicator = ({ historyItem }: ThinkingIndicatorProps) => {
   }, []);
 
   const selectedModel = useAppSelector(selectSelectedChatModel);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
 
   const hasContent = Array.isArray(historyItem.message.content)
     ? !!historyItem.message.content.length

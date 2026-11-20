@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../redux/slices/sessionSlice";
 import { useContext } from "react";
 import { IdeMessengerContext } from "../context/IdeMessenger";
 import { useAppDispatch, useAppSelector } from "../redux/hooks";
@@ -10,7 +11,9 @@ import { loadSession, saveCurrentSession } from "../redux/thunks/session";
 export const useCompactConversation = () => {
   const dispatch = useAppDispatch();
   const ideMessenger = useContext(IdeMessengerContext);
-  const currentSessionId = useAppSelector((state) => state.session.id);
+  const currentSessionId = useAppSelector(
+    (state) => selectActiveSession(state).id,
+  );
 
   return async (index: number) => {
     if (!currentSessionId) {

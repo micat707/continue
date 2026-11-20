@@ -30,8 +30,8 @@ import { VsCodeWebviewProtocol } from "../webviewProtocol";
 import { resolveHitlDecision, setHitlProtocol } from "../deepagents/hitlBridge";
 import { setExecuteProgressProtocol } from "../deepagents/executeProgressBridge";
 import {
-  activeSessionPermissions,
   getSessionChangedFiles,
+  getSessionPermissionHandle,
 } from "../deepagents/DeepAgentLLM";
 import {
   currentDateTimeHint,
@@ -154,16 +154,16 @@ export class VsCodeMessenger {
     // the user's approve/reject decisions, which unblock the paused agent run.
     this.onWebview(
       "deepAgentInterruptResponse",
-      async ({ data: { requestId, decisions } }) => {
-        resolveHitlDecision(requestId, decisions);
+      async ({ data: { requestId, decisions, sessionId } }) => {
+        resolveHitlDecision(requestId, decisions, sessionId);
       },
     );
 
     // DeepAgent tool-permission settings: the GUI settings section (权限 tab)
     // reads the three-layer state, persists a layer, or clears session memory.
     // Each handler returns the refreshed state so the UI re-renders in one trip.
-    this.onWebview("deepAgent/permissions/getState", async () => {
-      return buildPermissionsState();
+    this.onWebview("deepAgent/permissions/getState", async ({ data }) => {
+      return buildPermissionsState((data as any)?.sessionId);
     });
     this.onWebview(
       "deepAgent/permissions/updateLayer",
@@ -171,9 +171,10 @@ export class VsCodeMessenger {
         return updatePermissionsLayer(layer, config);
       },
     );
-    this.onWebview("deepAgent/permissions/clearSession", async () => {
-      activeSessionPermissions.impl?.clear();
-      return buildPermissionsState();
+    this.onWebview("deepAgent/permissions/clearSession", async ({ data }) => {
+      const sessionId = (data as any)?.sessionId;
+      getSessionPermissionHandle(sessionId)?.clear();
+      return buildPermissionsState(sessionId);
     });
 
     // The sidebar webview is too narrow for the config pages — when the user
@@ -322,8 +323,8 @@ export class VsCodeMessenger {
     // Files the current DeepAgent session wrote/edited via write_file/edit_file
     // (build artifacts from `execute` are excluded). The GUI renders these as a
     // categorized "session changes" summary after the agent finishes.
-    this.onWebview("getSessionChangedFiles", async () =>
-      getSessionChangedFiles(),
+    this.onWebview("getSessionChangedFiles", async ({ data }) =>
+      getSessionChangedFiles((data as any)?.sessionId),
     );
 
     this.onWebview("applyToFile", async ({ data }) => {

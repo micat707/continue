@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { createSelector } from "@reduxjs/toolkit";
 import { ToolStatus } from "core";
 import { RootState } from "../store";
@@ -21,25 +22,25 @@ import { isEditTool } from "../../util/toolCallState";
 
 // Primary selectors for tool calls
 export const selectCurrentToolCalls = createSelector(
-  (store: RootState) => store.session.history,
+  (store: RootState) => selectActiveSession(store).history,
   (history) => findAllCurToolCalls(history),
 );
 
 export const selectHasCurrentToolCalls = createSelector(
-  (store: RootState) => store.session.history,
+  (store: RootState) => selectActiveSession(store).history,
   (history) => hasCurrentToolCalls(history),
 );
 
 export const selectToolCallsByStatus = createSelector(
   [
-    (store: RootState) => store.session.history,
+    (store: RootState) => selectActiveSession(store).history,
     (_store: RootState, status: ToolStatus) => status,
   ],
   (history, status) => findAllCurToolCallsByStatus(history, status),
 );
 
 export const selectFirstPendingToolCall = createSelector(
-  (store: RootState) => store.session.history,
+  (store: RootState) => selectActiveSession(store).history,
   (history) => {
     const pendingToolCalls = findAllCurToolCallsByStatus(
       history,
@@ -52,7 +53,7 @@ export const selectFirstPendingToolCall = createSelector(
 // ID-based selectors for specific tool calls
 export const selectToolCallById = createSelector(
   [
-    (store: RootState) => store.session.history,
+    (store: RootState) => selectActiveSession(store).history,
     (_store: RootState, toolCallId: string) => toolCallId,
   ],
   (history, toolCallId) => findToolCallById(history, toolCallId),
@@ -60,7 +61,7 @@ export const selectToolCallById = createSelector(
 
 export const selectApplyStateByToolCallId = createSelector(
   [
-    (store: RootState) => store.session.codeBlockApplyStates,
+    (store: RootState) => selectActiveSession(store).codeBlockApplyStates,
     (_store: RootState, toolCallId: string) => toolCallId,
   ],
   (applyStates, toolCallId) => {
@@ -72,12 +73,12 @@ export const selectApplyStateByToolCallId = createSelector(
 
 // Status-specific convenience selectors
 export const selectPendingToolCalls = createSelector(
-  (store: RootState) => store.session.history,
+  (store: RootState) => selectActiveSession(store).history,
   (history) => findAllCurToolCallsByStatus(history, "generated"),
 );
 
 export const selectDoneApplyStates = createSelector(
-  (store: RootState) => store.session.codeBlockApplyStates.states,
+  (store: RootState) => selectActiveSession(store).codeBlockApplyStates.states,
   (states) => states.filter((applyState) => applyState.status === "done"),
 );
 
@@ -88,8 +89,9 @@ export const selectDoneApplyStates = createSelector(
 // tag (shouldn't happen at runtime) are kept visible to avoid orphaning diffs.
 export const selectApplyStatesForCurrentSession = createSelector(
   [
-    (store: RootState) => store.session.codeBlockApplyStates.states,
-    (store: RootState) => store.session.id,
+    (store: RootState) =>
+      selectActiveSession(store).codeBlockApplyStates.states,
+    (store: RootState) => selectActiveSession(store).id,
   ],
   (states, sessionId) =>
     states.filter(
@@ -108,7 +110,7 @@ export const selectApplyStatesForCurrentSession = createSelector(
 export const selectConfirmationRequiredApplyStates = createSelector(
   [
     selectApplyStatesForCurrentSession,
-    (store: RootState) => store.session.history,
+    (store: RootState) => selectActiveSession(store).history,
     (store: RootState) => store.ui.toolSettings,
   ],
   (applyStates, history, toolSettings) =>

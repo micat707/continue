@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { JSONContent } from "@tiptap/core";
 import { InputModifiers } from "core";
 import { describe, expect, it, vi } from "vitest";
@@ -71,7 +72,7 @@ beforeEach(() => {
 describe("streamResponseThunk", () => {
   it("should throw error when no chat model is selected", async () => {
     const noModelState = getEmptyRootState();
-    noModelState.session.history = [
+    selectActiveSession(noModelState).history = [
       {
         message: { id: "1", role: "user", content: "Hello" },
         contextItems: [],
@@ -200,7 +201,10 @@ describe("streamResponseThunk", () => {
         ...noModelState.session,
         streamAborter: expect.any(AbortController),
         history: [
-          { ...noModelState.session.history[0], isGatheringContext: false },
+          {
+            ...selectActiveSession(noModelState).history[0],
+            isGatheringContext: false,
+          },
         ],
       },
       ui: {
@@ -219,13 +223,13 @@ describe("streamResponseThunk", () => {
 
   it("should handle compilation error - not enough context", async () => {
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: { id: "1", role: "user", content: "Hello" },
         contextItems: [],
       },
     ];
-    initialState.session.id = "session-123";
+    selectActiveSession(initialState).id = "session-123";
     const mockStore = createMockStore(initialState);
     const mockIdeMessenger = mockStore.mockIdeMessenger;
     const requestSpy = vi.spyOn(mockIdeMessenger, "request");
@@ -562,7 +566,7 @@ describe("streamResponseThunk", () => {
 
   it("should throw error for other compilation errors", async () => {
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: { id: "1", role: "user", content: "Hello" },
         contextItems: [],

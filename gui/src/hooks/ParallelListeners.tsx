@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../redux/slices/sessionSlice";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { IdeMessengerContext } from "../context/IdeMessenger";
 
@@ -37,8 +38,10 @@ import { useWebviewListener } from "./useWebviewListener";
 function ParallelListeners() {
   const dispatch = useAppDispatch();
   const ideMessenger = useContext(IdeMessengerContext);
-  const history = useAppSelector((store) => store.session.history);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const history = useAppSelector((store) => selectActiveSession(store).history);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const selectedProfileId = useAppSelector(
     (store) => store.profiles.selectedProfileId,
   );
@@ -48,8 +51,10 @@ function ParallelListeners() {
   const hasDoneInitialConfigLoad = useRef(false);
 
   // Load symbols for chat on any session change
-  const sessionId = useAppSelector((state) => state.session.id);
-  const lastSessionId = useAppSelector((store) => store.session.lastSessionId);
+  const sessionId = useAppSelector((state) => selectActiveSession(state).id);
+  const lastSessionId = useAppSelector(
+    (store) => selectActiveSession(store).lastSessionId,
+  );
   const [initialSessionId] = useState(sessionId || lastSessionId);
 
   const handleConfigUpdate = useCallback(

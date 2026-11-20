@@ -1980,7 +1980,7 @@ export interface MessageOption {
   precompiled: boolean;
   /** Owning chat session id, threaded through to DeepAgent HITL so approval
    *  cards are attributed to the session that actually requested them. */
-  chatSessionId?: string;
+  sessionId?: string;
 }
 
 /* LSP-specific interfaces. */

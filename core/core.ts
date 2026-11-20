@@ -291,7 +291,11 @@ export class Core {
     });
 
     on("abort", (msg) => {
-      this.abortById(msg.data ?? msg.messageId);
+      // Cancellation is keyed by the per-request messageId (each llm/streamChat
+      // gets its own controller), so a Stop in one chat can never abort the
+      // generator of another. The optional sessionId in the payload is routing
+      // metadata for later stages; the messageId remains the authoritative key.
+      this.abortById(msg.messageId);
     });
 
     on("ping", (msg) => {

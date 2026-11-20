@@ -5,6 +5,7 @@ import {
   PaintBrushIcon,
   TableCellsIcon,
 } from "@heroicons/react/24/outline";
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { useContext, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import Shortcut from "../../../components/gui/Shortcut";
@@ -151,7 +152,7 @@ export function HelpSection() {
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
 
-  const currentSession = useAppSelector((state) => state.session);
+  const currentSession = useAppSelector((state) => selectActiveSession(state));
 
   const shortcuts = useMemo(() => {
     return isJetBrains() ? jetbrainsShortcuts : vscodeShortcuts;

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../../redux/slices/sessionSlice";
 import {
   ChevronDownIcon,
   EyeSlashIcon,
@@ -97,7 +98,7 @@ export function ExpandableToolbarPreview(props: ExpandableToolbarPreviewProps) {
   // Get toolbar visibility state from Redux if inputId and itemId are provided
   const newestCodeblockForInputId = useAppSelector((store) =>
     props.inputId
-      ? store.session.newestToolbarPreviewForInput[props.inputId]
+      ? selectActiveSession(store).newestToolbarPreviewForInput[props.inputId]
       : undefined,
   );
 

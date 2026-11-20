@@ -35,6 +35,7 @@ let protocol: VsCodeWebviewProtocol | null = null;
 interface PendingHitl {
   resolve: (decisions: HitlDecision[]) => void;
   reject: (e: Error) => void;
+  sessionId?: string;
 }
 const pending = new Map<string, PendingHitl>();
 
@@ -50,11 +51,11 @@ export function setHitlProtocol(p: VsCodeWebviewProtocol): void {
 export function requestHitlDecision(
   payload: unknown,
   signal?: AbortSignal,
-  chatSessionId?: string,
+  sessionId?: string,
 ): Promise<HitlDecision[]> {
   const requestId = randomUUID();
   const promise = new Promise<HitlDecision[]>((resolve, reject) => {
-    pending.set(requestId, { resolve, reject });
+    pending.set(requestId, { resolve, reject, sessionId });
     // Abort only THIS request, so pressing Stop in one chat session does not
     // cancel an approval pending in another session.
     if (signal) {
@@ -78,7 +79,7 @@ export function requestHitlDecision(
   void protocol
     ?.request("deepAgentInterrupt", {
       requestId,
-      chatSessionId,
+      sessionId,
       request: payload,
     })
     .catch((e) => {
@@ -94,9 +95,11 @@ export function requestHitlDecision(
 export function resolveHitlDecision(
   requestId: string,
   decisions: HitlDecision[],
+  sessionId?: string,
 ): void {
   console.log(
     "[hitlBridge] <<< decision received from GUI | requestId=" + requestId,
+    " session=" + (sessionId ?? "n/a"),
     JSON.stringify(decisions),
   );
   const p = pending.get(requestId);
@@ -104,6 +107,18 @@ export function resolveHitlDecision(
     console.log(
       "[hitlBridge] !! decision for unknown/stale requestId, ignored |",
       requestId,
+    );
+    return;
+  }
+  // If the GUI echoed a session id, make sure it matches the session that
+  // created the request; a mismatched decision is a stale/cross-session reply.
+  if (sessionId && p.sessionId && sessionId !== p.sessionId) {
+    console.log(
+      "[hitlBridge] !! decision session mismatch, ignored |",
+      requestId,
+      sessionId,
+      "!=",
+      p.sessionId,
     );
     return;
   }
@@ -115,13 +130,19 @@ export function resolveHitlDecision(
  * Abort every pending wait (e.g. the user pressed Stop mid-approval). Rejects
  * the awaiting streamChat instances so their turns wind down instead of hanging.
  */
-export function cancelHitlDecision(reason: string): void {
+export function cancelHitlDecision(reason: string, sessionId?: string): void {
   if (pending.size === 0) return;
-  console.log(
-    "[hitlBridge] decision waits cancelled (" + pending.size + ") |",
-    reason,
+  const entries = Array.from(pending.entries()).filter(
+    ([, p]) => !sessionId || p.sessionId === sessionId,
   );
-  const all = Array.from(pending.values());
-  pending.clear();
-  for (const p of all) p.reject(new Error(reason));
+  if (entries.length === 0) return;
+  console.log(
+    "[hitlBridge] decision waits cancelled (" + entries.length + ") |",
+    reason,
+    "session=" + (sessionId ?? "all"),
+  );
+  for (const [requestId, p] of entries) {
+    pending.delete(requestId);
+    p.reject(new Error(reason));
+  }
 }

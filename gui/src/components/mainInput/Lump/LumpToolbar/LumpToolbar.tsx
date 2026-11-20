@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../../redux/slices/sessionSlice";
 import { BuiltInToolNames } from "core/tools/builtIn";
 import { useContext, useEffect } from "react";
 import { IdeMessengerContext } from "../../../../context/IdeMessenger";
@@ -53,8 +54,12 @@ export function LumpToolbar() {
   const dispatch = useAppDispatch();
   const ideMessenger = useContext(IdeMessengerContext);
   const ttsActive = useAppSelector((state) => state.ui.ttsActive);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
-  const isInEdit = useAppSelector((state) => state.session.isInEdit);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
+  const isInEdit = useAppSelector(
+    (state) => selectActiveSession(state).isInEdit,
+  );
   const jetbrains = isJetBrains();
   const pendingToolCalls = useAppSelector(selectPendingToolCalls);
   // DeepAgent human-in-the-loop: a paused agent run awaiting the user's approval

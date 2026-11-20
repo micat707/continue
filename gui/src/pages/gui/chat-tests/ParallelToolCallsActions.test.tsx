@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { act } from "@testing-library/react";
 import { ChatMessage } from "core";
 import { renderWithProviders } from "../../../util/test/render";
@@ -92,7 +93,7 @@ describe("Parallel Tool Calls - Actions", () => {
     // Verify we have multiple pending tool calls
     let state = store.getState();
     let pendingToolCalls = findAllCurToolCallsByStatus(
-      state.session.history,
+      selectActiveSession(state).history,
       "generated",
     );
 
@@ -106,7 +107,7 @@ describe("Parallel Tool Calls - Actions", () => {
     // Check state after canceling first tool call
     state = store.getState();
     pendingToolCalls = findAllCurToolCallsByStatus(
-      state.session.history,
+      selectActiveSession(state).history,
       "generated",
     );
 
@@ -116,7 +117,7 @@ describe("Parallel Tool Calls - Actions", () => {
 
     // The first tool call should now be canceled
     const canceledToolCalls = findAllCurToolCallsByStatus(
-      state.session.history,
+      selectActiveSession(state).history,
       "canceled",
     );
     expect(canceledToolCalls).toHaveLength(1);

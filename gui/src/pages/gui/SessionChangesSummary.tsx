@@ -120,7 +120,7 @@ export function SessionChangesSummary({
     }
     let cancelled = false;
     ideMessenger
-      .request("getSessionChangedFiles", {})
+      .request("getSessionChangedFiles", { sessionId: sessionKey || undefined })
       .then((result: any) => {
         if (cancelled) return;
         setFiles(Array.isArray(result?.content) ? result.content : []);

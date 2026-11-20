@@ -63,7 +63,10 @@ export interface ListHistoryOptions {
 export type ToCoreFromIdeOrWebviewProtocol = {
   // Special
   ping: [string, string];
-  abort: [undefined, void];
+  /** Cancel a running stream. `sessionId` scopes the cancel to one chat so a
+   *  Stop in session B never aborts a background turn in session A. Optional
+   *  for backward compatibility (undefined = legacy global cancel). */
+  abort: [{ sessionId?: string } | undefined, void];
   cancelApply: [undefined, void];
 
   // History
@@ -214,6 +217,7 @@ export type ToCoreFromIdeOrWebviewProtocol = {
       prompt: string;
       completionOptions: LLMFullCompletionOptions;
       title: string;
+      sessionId?: string;
     },
     string,
   ];
@@ -223,6 +227,9 @@ export type ToCoreFromIdeOrWebviewProtocol = {
       messages: ChatMessage[];
       completionOptions: LLMFullCompletionOptions;
       title: string;
+      /** Owning chat session. Top-level so the IDE can route every stream by
+       *  session id without digging into messageOptions. */
+      sessionId?: string;
       messageOptions?: MessageOption;
       legacySlashCommandData?: {
         command: SlashCommandDescWithSource;
@@ -237,12 +244,17 @@ export type ToCoreFromIdeOrWebviewProtocol = {
   streamDiffLines: [StreamDiffLinesPayload, AsyncGenerator<DiffLine>];
   getDiffLines: [{ oldContent: string; newContent: string }, DiffLine[]];
   "llm/compileChat": [
-    { messages: ChatMessage[]; options: LLMFullCompletionOptions },
+    {
+      messages: ChatMessage[];
+      options: LLMFullCompletionOptions;
+      sessionId?: string;
+    },
     CompiledMessagesResult,
   ];
   "chatDescriber/describe": [
     {
       text: string;
+      sessionId?: string;
     },
     string | undefined,
   ];
@@ -301,7 +313,7 @@ export type ToCoreFromIdeOrWebviewProtocol = {
 
   "auth/getAuthUrl": [{ useOnboarding: boolean }, { url: string }];
   "tools/call": [
-    { toolCall: ToolCall },
+    { toolCall: ToolCall; sessionId?: string },
     {
       contextItems: ContextItem[];
       errorMessage?: string;

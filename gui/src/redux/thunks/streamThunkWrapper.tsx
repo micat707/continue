@@ -1,3 +1,8 @@
+import {
+  inSession,
+  selectActiveSession,
+  selectSessionById,
+} from "../slices/sessionSlice";
 import { createAsyncThunk } from "@reduxjs/toolkit";
 
 import StreamErrorDialog from "../../pages/gui/StreamError";
@@ -14,29 +19,41 @@ function isOverloadedErrorMessage(message?: string): boolean {
 import { selectSelectedChatModel } from "../slices/configSlice";
 import { setDialogMessage, setShowDialog } from "../slices/uiSlice";
 import { errorToolCall, setInactive } from "../slices/sessionSlice";
-import {
-  selectConfirmationRequiredApplyStates,
-  selectCurrentToolCalls,
-} from "../selectors/selectToolCalls";
+import { findAllCurToolCalls } from "../util";
 import { ThunkApiType } from "../store";
 import { cancelStream } from "./cancelStream";
 import { saveCurrentSession } from "./session";
 
+type StreamWrapperArg =
+  | (() => Promise<void>)
+  | { run: () => Promise<void>; sessionId?: string };
+
 export const streamThunkWrapper = createAsyncThunk<
   void,
-  () => Promise<void>,
+  StreamWrapperArg,
   ThunkApiType
->("chat/streamWrapper", async (runStream, { dispatch, getState }) => {
+>("chat/streamWrapper", async (arg, { dispatch, getState }) => {
+  // Accept both the legacy bare function and the session-aware object form so
+  // existing callers need no change; streaming callers pass `sessionId` to keep
+  // turn-end cleanup scoped to the owning session.
+  const runStream = typeof arg === "function" ? arg : arg.run;
+  const owningSessionId = typeof arg === "function" ? undefined : arg.sessionId;
+  const sessionState = (s: ReturnType<typeof getState>) =>
+    owningSessionId
+      ? selectSessionById(s, owningSessionId)
+      : selectActiveSession(s);
+
   try {
     for (let attempt = 0; attempt <= OVERLOADED_RETRIES; attempt++) {
       try {
         await runStream();
         const state = getState();
-        if (!state.session.isInEdit) {
+        if (!sessionState(state).isInEdit) {
           await dispatch(
             saveCurrentSession({
               openNewSession: false,
               generateTitle: true,
+              sessionId: owningSessionId,
             }),
           );
         }
@@ -51,12 +68,12 @@ export const streamThunkWrapper = createAsyncThunk<
           isOverloadedErrorMessage(message) && attempt < OVERLOADED_RETRIES;
 
         if (shouldRetry) {
-          await dispatch(cancelStream());
+          await dispatch(cancelStream(owningSessionId));
           const delayMs = OVERLOADED_DELAY_MS * 2 ** attempt;
           await new Promise((resolve) => setTimeout(resolve, delayMs));
-          await dispatch(cancelStream());
+          await dispatch(cancelStream(owningSessionId));
         } else {
-          await dispatch(cancelStream());
+          await dispatch(cancelStream(owningSessionId));
           dispatch(setDialogMessage(<StreamErrorDialog error={e} />));
           dispatch(setShowDialog(true));
 
@@ -80,8 +97,9 @@ export const streamThunkWrapper = createAsyncThunk<
     // cleaned up by cancelStream() itself (which dispatches setInactive), so
     // running this cleanup unconditionally is always safe and idempotent.
     const state = getState();
-    if (state.session.isStreaming && !state.session.pendingContinuation) {
-      dispatch(setInactive());
+    const targetSession = sessionState(state);
+    if (targetSession.isStreaming && !targetSession.pendingContinuation) {
+      dispatch(inSession(setInactive(), targetSession.id));
     }
 
     // Tool calls awaiting EXPLICIT user confirmation of an applied diff
@@ -90,13 +108,15 @@ export const streamThunkWrapper = createAsyncThunk<
     // ends while the user decides Accept/Reject; its completion is gated on that
     // choice. Stamping those as errored just because the turn ended first feeds a
     // false failure to the model and triggers retry loops — so exempt them.
+    // Scoped to the owning session's history/apply-states, not the active one.
     const confirmationToolCallIds = new Set(
-      selectConfirmationRequiredApplyStates(state)
-        .map((applyState) => applyState.toolCallId)
+      targetSession.codeBlockApplyStates.states
+        .filter((s: any) => s.status === "done" && !s.autoAccepted)
+        .map((applyState: any) => applyState.toolCallId)
         .filter((id): id is string => Boolean(id)),
     );
 
-    for (const tc of selectCurrentToolCalls(state)) {
+    for (const tc of findAllCurToolCalls(targetSession.history)) {
       if (tc.status !== "generating" && tc.status !== "calling") {
         continue;
       }
@@ -104,18 +124,21 @@ export const streamThunkWrapper = createAsyncThunk<
         continue;
       }
       dispatch(
-        errorToolCall({
-          toolCallId: tc.toolCallId,
-          output: [
-            {
-              name: "Tool Call Error",
-              description: "Turn ended",
-              content:
-                "This tool call was left pending when the turn ended unexpectedly. Please retry the operation.",
-              icon: "problems",
-            },
-          ],
-        }),
+        inSession(
+          errorToolCall({
+            toolCallId: tc.toolCallId,
+            output: [
+              {
+                name: "Tool Call Error",
+                description: "Turn ended",
+                content:
+                  "This tool call was left pending when the turn ended unexpectedly. Please retry the operation.",
+                icon: "problems",
+              },
+            ],
+          }),
+          targetSession.id,
+        ),
       );
     }
   }

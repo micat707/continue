@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { useContext } from "react";
 import { IdeMessengerContext } from "../../context/IdeMessenger";
 import { useAppDispatch, useAppSelector } from "../../redux/hooks";
@@ -9,7 +10,7 @@ export default function InlineErrorMessage() {
   const dispatch = useAppDispatch();
   const ideMessenger = useContext(IdeMessengerContext);
   const inlineErrorMessage = useAppSelector(
-    (state) => state.session.inlineErrorMessage,
+    (state) => selectActiveSession(state).inlineErrorMessage,
   );
   if (inlineErrorMessage === "out-of-context") {
     return (

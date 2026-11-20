@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { ConfigYaml, parseConfigYaml } from "@continuedev/config-yaml";
 import {
   ArrowPathIcon,
@@ -407,7 +408,7 @@ function MCPServerPreview({
 export function ToolsSection() {
   const availableTools = useAppSelector((state) => state.config.config.tools);
 
-  const mode = useAppSelector((store) => store.session.mode);
+  const mode = useAppSelector((store) => selectActiveSession(store).mode);
   const servers = useAppSelector(
     (store) => store.config.config.mcpServerStatuses,
   );

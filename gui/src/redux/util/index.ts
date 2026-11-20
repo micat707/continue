@@ -1,6 +1,9 @@
 import { ContextItem, ToolCallState, ToolStatus } from "core";
 import { IIdeMessenger } from "../../context/IdeMessenger";
-import { ChatHistoryItemWithMessageId } from "../slices/sessionSlice";
+import {
+  ChatHistoryItemWithMessageId,
+  SessionData,
+} from "../slices/sessionSlice";
 import { RootState } from "../store";
 
 /**
@@ -10,7 +13,7 @@ import { RootState } from "../store";
  * @returns True if there are any current tool calls, false otherwise
  */
 export function hasCurrentToolCalls(
-  chatHistory: RootState["session"]["history"],
+  chatHistory: SessionData["history"],
 ): boolean {
   return findAllCurToolCalls(chatHistory).length > 0;
 }
@@ -23,7 +26,7 @@ export function hasCurrentToolCalls(
  * @returns Array of tool call states with the specified status
  */
 export function findAllCurToolCallsByStatus(
-  chatHistory: RootState["session"]["history"],
+  chatHistory: SessionData["history"],
   status: ToolStatus,
 ): ToolCallState[] {
   return findAllCurToolCalls(chatHistory).filter(
@@ -38,7 +41,7 @@ export function findAllCurToolCallsByStatus(
  * @returns An array of all current tool call states, or empty array if none found
  */
 export function findAllCurToolCalls(
-  chatHistory: RootState["session"]["history"],
+  chatHistory: SessionData["history"],
 ): ToolCallState[] {
   // Find the most recent assistant message that has tool call states
   let seenAssistantMessage = false;
@@ -71,7 +74,7 @@ export function findAllCurToolCalls(
  * @returns The tool call state with the matching ID, or undefined if not found
  */
 export function findToolCallById(
-  chatHistory: RootState["session"]["history"],
+  chatHistory: SessionData["history"],
   toolCallId: string,
 ): ToolCallState | undefined {
   for (let i = chatHistory.length - 1; i >= 0; i--) {
@@ -90,7 +93,7 @@ export function findToolCallById(
 }
 
 export function findChatHistoryItemByToolCallId(
-  chatHistory: RootState["session"]["history"],
+  chatHistory: SessionData["history"],
   toolCallId: string,
 ): ChatHistoryItemWithMessageId | undefined {
   return chatHistory.findLast(

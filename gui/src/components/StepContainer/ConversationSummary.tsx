@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { TrashIcon } from "@heroicons/react/24/outline";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { ChatHistoryItem } from "core";
@@ -16,7 +17,8 @@ interface ConversationSummaryProps {
 export default function ConversationSummary(props: ConversationSummaryProps) {
   const [open, setOpen] = useState(true);
   const isLoading = useAppSelector(
-    (state) => state.session.compactionLoading[props.index] || false,
+    (state) =>
+      selectActiveSession(state).compactionLoading[props.index] || false,
   );
   const deleteCompaction = useDeleteCompaction();
 

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../redux/slices/sessionSlice";
 import {
   HandThumbDownIcon,
   HandThumbUpIcon,
@@ -15,7 +16,7 @@ export interface FeedbackButtonsProps {
 export function FeedbackButtons({ item }: FeedbackButtonsProps) {
   const [feedback, setFeedback] = useState<boolean | undefined>(undefined);
   const ideMessenger = useContext(IdeMessengerContext);
-  const sessionId = useAppSelector((store) => store.session.id);
+  const sessionId = useAppSelector((store) => selectActiveSession(store).id);
 
   const sendFeedback = (feedback: boolean) => {
     setFeedback(feedback);

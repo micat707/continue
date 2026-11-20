@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   ArrowLeftIcon,
   ChatBubbleOvalLeftIcon,
@@ -157,7 +158,9 @@ export function Chat() {
   const showSessionTabs = useAppSelector(
     (store) => store.config.config.ui?.showSessionTabs ?? true,
   );
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
   const [stepsOpen] = useState<(boolean | undefined)[]>([]);
   const mainTextInputRef = useRef<HTMLInputElement>(null);
   const stepsDivRef = useRef<HTMLDivElement>(null);
@@ -175,7 +178,7 @@ export function Chat() {
   //
   // RULE for this layout: never re-pin the list to the bottom when the
   // composer resizes — that would reintroduce the same movement.
-  const history = useAppSelector((state) => state.session.history);
+  const history = useAppSelector((state) => selectActiveSession(state).history);
   const showChatScrollbar = useAppSelector(
     (state) => state.config.config.ui?.showChatScrollbar,
   );
@@ -248,13 +251,17 @@ export function Chat() {
     hasRunningToolCall ||
     hasPendingConfirmation;
   const codeToEdit = useAppSelector((state) => state.editModeState.codeToEdit);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const selectedModel = useAppSelector(selectSelectedChatModel);
   const contextPercentage = useAppSelector(
-    (state) => state.session.contextPercentage,
+    (state) => selectActiveSession(state).contextPercentage,
   );
 
-  const lastSessionId = useAppSelector((state) => state.session.lastSessionId);
+  const lastSessionId = useAppSelector(
+    (state) => selectActiveSession(state).lastSessionId,
+  );
   const hasDismissedExploreDialog = useAppSelector(
     (state) => state.ui.hasDismissedExploreDialog,
   );
@@ -301,11 +308,11 @@ export function Chat() {
       const stateSnapshot = reduxStore.getState();
       const latestPendingToolCalls = selectPendingToolCalls(stateSnapshot);
       const latestPendingApplyStates = selectDoneApplyStates(stateSnapshot);
-      const isCurrentlyInEdit = stateSnapshot.session.isInEdit;
+      const isCurrentlyInEdit = selectActiveSession(stateSnapshot).isInEdit;
       const codeToEditSnapshot = stateSnapshot.editModeState.codeToEdit;
       const selectedModelByRole =
         stateSnapshot.config.config.selectedModelByRole;
-      const currentMode = stateSnapshot.session.mode;
+      const currentMode = selectActiveSession(stateSnapshot).mode;
 
       // Cancel all pending tool calls
       latestPendingToolCalls.forEach((toolCallState) => {

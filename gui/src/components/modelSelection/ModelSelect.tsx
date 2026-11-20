@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   ArrowPathIcon,
   ChevronDownIcon,
@@ -121,7 +122,9 @@ function ModelSelect() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
 
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const config = useAppSelector((state) => state.config.config);
   const isConfigLoading = useAppSelector((state) => state.config.loading);
   const buttonRef = useRef<HTMLButtonElement>(null);

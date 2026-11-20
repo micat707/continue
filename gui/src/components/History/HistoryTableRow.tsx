@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   ArrowDownOnSquareIcon,
   PencilSquareIcon,
@@ -39,7 +40,9 @@ export function HistoryTableRow({
   const [sessionTitleEditValue, setSessionTitleEditValue] = useState(
     sessionMetadata.title,
   );
-  const currentSessionId = useAppSelector((state) => state.session.id);
+  const currentSessionId = useAppSelector(
+    (state) => selectActiveSession(state).id,
+  );
 
   useEffect(() => {
     setSessionTitleEditValue(sessionMetadata.title);

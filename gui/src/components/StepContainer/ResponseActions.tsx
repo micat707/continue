@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   ArrowsPointingInIcon,
   BarsArrowDownIcon,
@@ -29,9 +30,11 @@ export default function ResponseActions({
   isLast,
 }: ResponseActionsProps) {
   const contextPercentage = useAppSelector(
-    (state) => state.session.contextPercentage,
+    (state) => selectActiveSession(state).contextPercentage,
   );
-  const isPruned = useAppSelector((state) => state.session.isPruned);
+  const isPruned = useAppSelector(
+    (state) => selectActiveSession(state).isPruned,
+  );
 
   const percent = Math.round((contextPercentage ?? 0) * 100);
   const buttonColorClass =

@@ -1,3 +1,4 @@
+import { selectActiveSession, selectSessionById } from "../slices/sessionSlice";
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
 import React from "react";
 import { LLMFullCompletionOptions, ModelDescription } from "core";
@@ -10,7 +11,9 @@ import {
   abortStream,
   addPromptCompletionPair,
   clearDanglingMessages,
+  ensureSessionAborter,
   errorToolCall,
+  inSession,
   setActive,
   setAppliedRulesAtIndex,
   setContextPercentage,
@@ -40,6 +43,7 @@ import { getBaseSystemMessage } from "../util/getBaseSystemMessage";
 import { callToolById } from "./callToolById";
 import { evaluateToolPolicies } from "./evaluateToolPolicies";
 import { preprocessToolCalls } from "./preprocessToolCallArgs";
+import { throttleChunkSave } from "./session";
 import { streamResponseAfterToolCall } from "./streamResponseAfterToolCall";
 
 // Per-stream sequence id, stamped on every request/response marker so that
@@ -104,8 +108,8 @@ export const streamNormalInput = createAsyncThunk<
     }
     const state = getState();
     // Closure-captured owning session. All downstream async work must use this
-    // value, never a fresh getState().session.id (which changes on tab switch).
-    const owningSessionId = sessionId ?? state.session.id;
+    // value, never a fresh selectActiveSession(getState()).id (which changes on tab switch).
+    const owningSessionId = sessionId ?? selectActiveSession(state).id;
     const selectedChatModel = selectSelectedChatModel(state);
 
     if (!selectedChatModel) {
@@ -144,15 +148,16 @@ export const streamNormalInput = createAsyncThunk<
       };
     }
 
+    const owningSession = selectSessionById(state, owningSessionId);
     completionOptions = buildReasoningCompletionOptions(
       completionOptions,
-      state.session.hasReasoningEnabled,
+      owningSession.hasReasoningEnabled,
       selectedChatModel,
     );
 
     // Construct messages (excluding system message)
     const baseSystemMessage = getBaseSystemMessage(
-      state.session.mode,
+      owningSession.mode,
       selectedChatModel,
       activeTools,
     );
@@ -165,7 +170,7 @@ export const streamNormalInput = createAsyncThunk<
         )
       : baseSystemMessage;
 
-    const withoutMessageIds = state.session.history.map((item) => {
+    const withoutMessageIds = owningSession.history.map((item) => {
       const { id, ...messageWithoutId } = item.message;
       return { ...item, message: messageWithoutId };
     });
@@ -174,7 +179,7 @@ export const streamNormalInput = createAsyncThunk<
     // snapshot, cached per session) + open editor files for the last message.
     const environmentContext = await getMicatEnvironmentContext(
       extra.ideMessenger,
-      state.session.id ?? "default",
+      owningSessionId ?? "default",
     );
     let openEditorFiles: string[] = [];
     let activeEditorFileName: string | undefined;
@@ -204,14 +209,17 @@ export const streamNormalInput = createAsyncThunk<
     // TODO parallel tool calls will cause issues with this
     // because there will be multiple tool messages, so which one should have applied rules?
     dispatch(
-      setAppliedRulesAtIndex({
-        index: appliedRuleIndex,
-        appliedRules: appliedRules,
-      }),
+      inSession(
+        setAppliedRulesAtIndex({
+          index: appliedRuleIndex,
+          appliedRules: appliedRules,
+        }),
+        owningSessionId,
+      ),
     );
 
-    dispatch(setActive());
-    dispatch(setInlineErrorMessage(undefined));
+    dispatch(inSession(setActive(), owningSessionId));
+    dispatch(inSession(setInlineErrorMessage(undefined), owningSessionId));
 
     const precompiledRes = await extra.ideMessenger.request("llm/compileChat", {
       messages,
@@ -220,8 +228,10 @@ export const streamNormalInput = createAsyncThunk<
 
     if (precompiledRes.status === "error") {
       if (precompiledRes.error.includes("Not enough context")) {
-        dispatch(setInlineErrorMessage("out-of-context"));
-        dispatch(setInactive());
+        dispatch(
+          inSession(setInlineErrorMessage("out-of-context"), owningSessionId),
+        );
+        dispatch(inSession(setInactive(), owningSessionId));
         return;
       } else {
         throw new Error(precompiledRes.error);
@@ -259,10 +269,20 @@ export const streamNormalInput = createAsyncThunk<
       );
     });
 
-    dispatch(setIsPruned(didPrune));
-    dispatch(setContextPercentage(contextPercentage));
+    dispatch(inSession(setIsPruned(didPrune), owningSessionId));
+    dispatch(
+      inSession(setContextPercentage(contextPercentage), owningSessionId),
+    );
 
-    const streamAborter = state.session.streamAborter;
+    // Bind this turn's AbortController to the OWNING session, not the global
+    // single slot. This is the GUI side of session-scoped cancellation: a Stop
+    // in another chat signals a different controller and leaves this stream
+    // untouched. `ensureSessionAborter` is idempotent across tool continuations.
+    dispatch(ensureSessionAborter(owningSessionId));
+    const ownerSession = selectSessionById(getState(), owningSessionId);
+    const streamAborter =
+      ownerSession.streamAborters?.[owningSessionId] ??
+      ownerSession.streamAborter;
     // Captured so the turn-end branch (below, outside this try) can print the
     // full reply when the model returns plain text with no tool call. Must be
     // declared OUTSIDE the try — the turn-end branch references it.
@@ -292,10 +312,11 @@ export const streamNormalInput = createAsyncThunk<
           completionOptions,
           title: selectedChatModel.title,
           messages: compiledChatMessages,
+          sessionId: owningSessionId,
           legacySlashCommandData,
           messageOptions: {
             precompiled: true,
-            chatSessionId: owningSessionId,
+            sessionId: owningSessionId,
           },
         },
         streamAborter.signal,
@@ -341,9 +362,9 @@ export const streamNormalInput = createAsyncThunk<
           return false;
         }
         console.error("[continue] ✕", e.message, `#${requestId}`);
-        dispatch(setInactive());
-        dispatch(abortStream());
-        dispatch(clearDanglingMessages());
+        dispatch(inSession(setInactive(), owningSessionId));
+        dispatch(abortStream(owningSessionId));
+        dispatch(inSession(clearDanglingMessages(), owningSessionId));
         dispatch(
           setDialogMessage(
             React.createElement(StreamErrorDialog, {
@@ -373,7 +394,7 @@ export const streamNormalInput = createAsyncThunk<
       );
       while (!next.done) {
         // Liveness is owned by THIS stream's AbortController, not by the global
-        // `state.session.isStreaming` flag. Reading the global flag made a turn
+        // `selectActiveSession(state).isStreaming` flag. Reading the global flag made a turn
         // in another chat (or a tab switch's newSession) look like an
         // unexpected interruption of this stream — producing the spurious
         // "response was interrupted" dialog and, worse, letting this stream
@@ -412,7 +433,10 @@ export const streamNormalInput = createAsyncThunk<
           );
         }
 
-        dispatch(streamUpdate(next.value));
+        dispatch(inSession(streamUpdate(next.value), owningSessionId));
+        // Persist a throttled snapshot so a webview reload mid-stream loses at
+        // most one window of generated text (scoped to the owning session).
+        throttleChunkSave(owningSessionId, dispatch);
         try {
           next = await readNext();
         } catch (e) {
@@ -456,7 +480,9 @@ export const streamNormalInput = createAsyncThunk<
               JSON.stringify(toolCallsDump, null, 2),
           );
         }
-        dispatch(addPromptCompletionPair([next.value]));
+        dispatch(
+          inSession(addPromptCompletionPair([next.value]), owningSessionId),
+        );
 
         try {
           extra.ideMessenger.post("devdata/log", {
@@ -467,7 +493,7 @@ export const streamNormalInput = createAsyncThunk<
               modelProvider: selectedChatModel.underlyingProviderName,
               modelName: selectedChatModel.title,
               modelTitle: selectedChatModel.title,
-              sessionId: state.session.id,
+              sessionId: owningSessionId,
               ...(!!activeTools.length && {
                 tools: activeTools.map((tool) => tool.function.name),
               }),
@@ -498,17 +524,20 @@ export const streamNormalInput = createAsyncThunk<
       ) {
         for (const tc of toolCallsToCancel) {
           dispatch(
-            errorToolCall({
-              toolCallId: tc.toolCallId,
-              output: [
-                {
-                  name: "Tool Call Error",
-                  description: "Premature Close",
-                  content: `"Premature Close" error: this tool call was aborted mid-stream because the arguments took too long to stream or there were network issues. Please re-attempt by breaking the operation into smaller chunks or trying something else`,
-                  icon: "problems",
-                },
-              ],
-            }),
+            inSession(
+              errorToolCall({
+                toolCallId: tc.toolCallId,
+                output: [
+                  {
+                    name: "Tool Call Error",
+                    description: "Premature Close",
+                    content: `"Premature Close" error: this tool call was aborted mid-stream because the arguments took too long to stream or there were network issues. Please re-attempt by breaking the operation into smaller chunks or trying something else`,
+                    icon: "problems",
+                  },
+                ],
+              }),
+              owningSessionId,
+            ),
           );
         }
       } else {
@@ -528,10 +557,13 @@ export const streamNormalInput = createAsyncThunk<
     );
     for (const { toolCallId } of generatingCalls) {
       dispatch(
-        setToolGenerated({
-          toolCallId,
-          tools: state1.config.config.tools,
-        }),
+        inSession(
+          setToolGenerated({
+            toolCallId,
+            tools: state1.config.config.tools,
+          }),
+          owningSessionId,
+        ),
       );
     }
 
@@ -574,7 +606,7 @@ export const streamNormalInput = createAsyncThunk<
         "[continue] turn ended — no tool calls; full model reply:",
         finalCompletion,
       );
-      dispatch(setInactive());
+      dispatch(inSession(setInactive(), owningSessionId));
     } else if (needsApprovalPolicies.length > 0) {
       const builtInReadonlyAutoApproved = autoApprovedPolicies.filter(
         ({ toolCallState }) =>
@@ -594,6 +626,7 @@ export const streamNormalInput = createAsyncThunk<
                   toolCallId: toolCallState.toolCallId,
                   isAutoApproved: true,
                   depth: depth + 1,
+                  sessionId: owningSessionId,
                 }),
               ),
             );
@@ -601,7 +634,7 @@ export const streamNormalInput = createAsyncThunk<
         );
       }
 
-      dispatch(setInactive());
+      dispatch(inSession(setInactive(), owningSessionId));
     } else {
       // auto stream cases increase thunk depth by 1 for debugging
       const state4 = getState();
@@ -618,6 +651,7 @@ export const streamNormalInput = createAsyncThunk<
                   toolCallId,
                   isAutoApproved: true,
                   depth: depth + 1,
+                  sessionId: owningSessionId,
                 }),
               ),
             );
@@ -630,6 +664,7 @@ export const streamNormalInput = createAsyncThunk<
               streamResponseAfterToolCall({
                 toolCallId,
                 depth: depth + 1,
+                sessionId: owningSessionId,
               }),
             ),
           );

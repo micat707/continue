@@ -48,7 +48,13 @@ export type ToWebviewFromIdeOrCoreProtocol = {
   // so the card can flip in place. Keyed by runId so multiple commands (and
   // historical cards) never cross-contaminate the card content.
   deepagentExecuteProgress: [
-    { runId: string; chunk?: string; done?: boolean; exitCode?: number | null },
+    {
+      sessionId?: string;
+      runId: string;
+      chunk?: string;
+      done?: boolean;
+      exitCode?: number | null;
+    },
     void,
   ];
 };

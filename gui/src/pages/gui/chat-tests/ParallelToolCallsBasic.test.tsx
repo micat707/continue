@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { act } from "@testing-library/react";
 import { ChatMessage } from "core";
 import { renderWithProviders } from "../../../util/test/render";
@@ -88,7 +89,7 @@ describe("Parallel Tool Calls - Basic", () => {
     });
 
     const state = store.getState();
-    const history = state.session.history;
+    const history = selectActiveSession(state).history;
 
     // Should have user message and assistant message
     expect(history).toHaveLength(2);

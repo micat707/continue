@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { createAsyncThunk } from "@reduxjs/toolkit";
 import { ContextItem } from "core";
 import {
@@ -26,7 +27,10 @@ export const moveTerminalProcessToBackground = createAsyncThunk<
   async ({ toolCallId }, { dispatch, getState, extra }) => {
     // Find the current tool call using utility function
     const state = getState();
-    const toolCall = findToolCallById(state.session.history, toolCallId);
+    const toolCall = findToolCallById(
+      selectActiveSession(state).history,
+      toolCallId,
+    );
 
     if (!toolCall) {
       console.error("Could not find tool call with ID:", toolCallId);
@@ -51,8 +55,8 @@ export const moveTerminalProcessToBackground = createAsyncThunk<
       },
     ];
 
-    // Abort any existing stream for this tool call
-    dispatch(abortStream());
+    // Abort any existing stream for this tool call (in its owning session)
+    dispatch(abortStream(selectActiveSession(state).id));
 
     // Update the tool call output
     dispatch(

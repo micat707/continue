@@ -202,10 +202,17 @@ export type ChatHistoryItemWithMessageId = ChatHistoryItem & {
   turnElapsedMs?: number;
 };
 
-type SessionState = {
-  lastSessionId?: string;
+/**
+ * Per-session state. Nearly every field is private to one chat session.
+ * `isSessionMetadataLoading`/`allSessionMetadata` are duplicated here only so
+ * the legacy inner reducers (which the wrapper still calls unchanged) have a
+ * place to write; the authoritative copies live at the top level and are
+ * synced by `sessionReducer`.
+ */
+export type SessionData = {
   isSessionMetadataLoading: boolean;
   allSessionMetadata: BaseSessionMetadata[];
+  lastSessionId?: string;
   history: ChatHistoryItemWithMessageId[];
   isStreaming: boolean;
   /**
@@ -221,7 +228,13 @@ type SessionState = {
   turnStartedAt?: number;
   title: string;
   id: string;
+  /** Legacy single-slot aborter. Kept for backward compatibility; new streams
+   *  use `streamAborters[sessionId]` so terminating one chat never cancels a
+   *  background turn in another. */
   streamAborter: AbortController;
+  /** Per-session stream aborters. Keyed by the session id captured at stream
+   *  entry, so "Stop" in session B cannot abort a running stream in session A. */
+  streamAborters: Record<string, AbortController>;
   mainEditorContentTrigger?: JSONContent | undefined;
   symbols: FileSymbolMap;
   mode: MessageModes;
@@ -238,30 +251,57 @@ type SessionState = {
   compactionLoading: Record<number, boolean>; // Track compaction loading by message index
 };
 
+export function createSessionData(id?: string): SessionData {
+  return {
+    isSessionMetadataLoading: false,
+    allSessionMetadata: [],
+    history: [],
+    isStreaming: false,
+    pendingContinuation: false,
+    title: NEW_SESSION_TITLE,
+    id: id ?? uuidv4(),
+    streamAborter: new AbortController(),
+    streamAborters: {},
+    symbols: {},
+    mode: "agent",
+    isInEdit: false,
+    codeBlockApplyStates: { states: [], curIndex: 0 },
+    lastSessionId: undefined,
+    newestToolbarPreviewForInput: {},
+    compactionLoading: {},
+  };
+}
+
+/**
+ * Top-level session slice state. `sessions` is the authoritative store of all
+ * chat sessions; `activeSessionId` is the one currently rendered. Global UI
+ * (session list metadata) lives here, not in any one session.
+ */
+export type SessionState = {
+  sessions: Record<string, SessionData>;
+  activeSessionId: string;
+  isSessionMetadataLoading: boolean;
+  allSessionMetadata: BaseSessionMetadata[];
+};
+
+const INITIAL_ACTIVE_ID = uuidv4();
 export const INITIAL_SESSION_STATE: SessionState = {
+  sessions: { [INITIAL_ACTIVE_ID]: createSessionData(INITIAL_ACTIVE_ID) },
+  activeSessionId: INITIAL_ACTIVE_ID,
   isSessionMetadataLoading: false,
   allSessionMetadata: [],
-  history: [],
-  isStreaming: false,
-  pendingContinuation: false,
-  title: NEW_SESSION_TITLE,
-  id: uuidv4(),
-  streamAborter: new AbortController(),
-  symbols: {},
-  mode: "agent",
-  isInEdit: false,
-  codeBlockApplyStates: {
-    states: [],
-    curIndex: 0,
-  },
-  lastSessionId: undefined,
-  newestToolbarPreviewForInput: {},
-  compactionLoading: {},
 };
+
+/**
+ * The inner slice still operates on a single flat SessionData so its 40+
+ * reducers remain unchanged. The exported reducer below wraps it with the
+ * multi-session `sessions` map (see `sessionReducer` at the file end).
+ */
+const INITIAL_SESSION_DATA = createSessionData();
 
 export const sessionSlice = createSlice({
   name: "session",
-  initialState: INITIAL_SESSION_STATE,
+  initialState: INITIAL_SESSION_DATA,
   reducers: {
     addPromptCompletionPair: (
       state,
@@ -552,7 +592,38 @@ export const sessionSlice = createSlice({
 
       state.isStreaming = false;
     },
-    abortStream: (state) => {
+    /**
+     * Ensure a per-session aborter exists. Called at stream entry with the
+     * owning session id; repeated calls are idempotent. The stream captures
+     * `selectActiveSession(state).streamAborters[id]` so its lifetime is tied to that
+     * session, not to whichever chat is currently displayed.
+     */
+    ensureSessionAborter: (state, { payload }: PayloadAction<string>) => {
+      if (!state.streamAborters) {
+        state.streamAborters = {};
+      }
+      if (!state.streamAborters[payload]) {
+        state.streamAborters[payload] = new AbortController();
+      }
+    },
+    /**
+     * Abort one session's stream. With a `sessionId`, only that session's
+     * aborter is signalled (Stop in B never kills a background turn in A).
+     * With no id, fall back to the legacy single-slot aborter.
+     */
+    abortStream: (state, { payload }: PayloadAction<string | undefined>) => {
+      if (payload) {
+        // Targeted cancel: signal only the named session's controller. If no
+        // controller was registered (stream never started / already cleaned
+        // up), do nothing — NEVER fall through to the legacy slot, which would
+        // spuriously abort an unrelated active stream.
+        if (state.streamAborters?.[payload]) {
+          state.streamAborters[payload].abort();
+          state.streamAborters[payload] = new AbortController();
+        }
+        return;
+      }
+      // No id (legacy callers only): abort the single global slot.
       state.streamAborter.abort();
       state.streamAborter = new AbortController();
     },
@@ -725,15 +796,12 @@ export const sessionSlice = createSlice({
       }
     },
     newSession: (state, { payload }: PayloadAction<Session | undefined>) => {
-      // Temporary diagnostics: trace WHO dispatched the session reset, so we
-      // can pin down reports of "sending clears the current conversation".
-      // Remove once the culprit is confirmed.
-      console.trace("[continue] newSession dispatched");
       state.lastSessionId = state.id;
 
-      state.streamAborter.abort();
-      state.streamAborter = new AbortController();
-
+      // NOTE: do NOT abort a stream here. `newSession` fires on tab switches
+      // and session loads; aborting here used to kill the background stream of
+      // the chat we are leaving behind. Stream lifetime is now owned per-session
+      // via `streamAborters[id]` and ended explicitly by `cancelStream(sessionId)`.
       state.isStreaming = false;
       state.symbols = {};
 
@@ -1047,7 +1115,7 @@ export const sessionSlice = createSlice({
     },
     setInlineErrorMessage: (
       state,
-      action: PayloadAction<SessionState["inlineErrorMessage"]>,
+      action: PayloadAction<SessionData["inlineErrorMessage"]>,
     ) => {
       state.inlineErrorMessage = action.payload;
     },
@@ -1070,7 +1138,7 @@ export const sessionSlice = createSlice({
 });
 
 function addPassthroughCases(
-  builder: ActionReducerMapBuilder<SessionState>,
+  builder: ActionReducerMapBuilder<SessionData>,
   thunks: AsyncThunk<any, any, any>[],
 ) {
   thunks.forEach((thunk) => {
@@ -1081,9 +1149,33 @@ function addPassthroughCases(
   });
 }
 
+/**
+ * Stamp a session action with the owning session id so `sessionReducer`
+ * applies it to the correct session even when that session is in the
+ * background. Used by streaming thunks; plain UI dispatches need no stamp
+ * (they fall back to the active session).
+ */
+export function inSession<T extends { type: string }>(
+  action: T,
+  sessionId: string,
+): T & { meta: { sessionId: string } } {
+  return { ...action, meta: { ...((action as any).meta ?? {}), sessionId } };
+}
+
+/** The currently rendered session. All UI that used to read `state.session`
+ *  now reads through this selector (or `selectSessionById`). */
+export const selectActiveSession = (state: RootState): SessionData => {
+  const id = state.session.activeSessionId;
+  return state.session.sessions[id] ?? createSessionData(id);
+};
+
+export const selectSessionById = (state: RootState, id: string): SessionData =>
+  state.session.sessions[id] ?? createSessionData(id);
+
 export const selectApplyStateByStreamId = createSelector(
   [
-    (state: RootState) => state.session.codeBlockApplyStates.states,
+    (state: RootState) =>
+      selectActiveSession(state).codeBlockApplyStates.states,
     (_state: RootState, streamId?: string) => streamId,
   ],
   (states, streamId) => {
@@ -1093,7 +1185,8 @@ export const selectApplyStateByStreamId = createSelector(
 
 export const selectApplyStateByToolCallId = createSelector(
   [
-    (state: RootState) => state.session.codeBlockApplyStates.states,
+    (state: RootState) =>
+      selectActiveSession(state).codeBlockApplyStates.states,
     (_state: RootState, toolCallId?: string) => toolCallId,
   ],
   (states, toolCallId) => {
@@ -1126,6 +1219,7 @@ export const {
   resetNextCodeBlockToApplyIndex,
   updateApplyState,
   abortStream,
+  ensureSessionAborter,
   setToolCallCalling,
   cancelToolCall,
   errorToolCall,
@@ -1149,6 +1243,110 @@ export const {
   setPendingContinuation,
 } = sessionSlice.actions;
 
-export const { selectIsGatheringContext } = sessionSlice.selectors;
+// Re-defined against the multi-session RootState (the inner slice's generated
+// selector expects a flat SessionData and is not compatible with the wrapper).
+export const selectIsGatheringContext = (
+  state: RootState,
+): boolean | undefined =>
+  selectActiveSession(state).history.at(-1)?.isGatheringContext;
 
-export default sessionSlice.reducer;
+/**
+ * Multi-session wrapper around the flat inner slice.
+ *
+ * Every session action is applied to `sessions[targetId]`, where `targetId`
+ * comes from `action.meta.sessionId` (injected by streaming thunks) and falls
+ * back to `activeSessionId`. This is the crux of front-end isolation: a chunk
+ * from a background session lands in that session's own `history`, never in
+ * the currently displayed one.
+ */
+const innerReducer = sessionSlice.reducer;
+
+// `ensureSessionAborter(id)` and `abortStream(id)` carry the TARGET session id
+// in their payload (not via `inSession`). Route them to `sessions[id]` so the
+// aborter that a stream captured is the very one a later Stop signals — even
+// after the user switched to a different active session.
+const SESSION_ID_PAYLOAD_ACTIONS = new Set([
+  sessionSlice.actions.ensureSessionAborter.type,
+  sessionSlice.actions.abortStream.type,
+]);
+
+const GLOBAL_METADATA_ACTIONS = new Set([
+  sessionSlice.actions.setIsSessionMetadataLoading.type,
+  sessionSlice.actions.setAllSessionMetadata.type,
+  sessionSlice.actions.addSessionMetadata.type,
+  sessionSlice.actions.deleteSessionMetadata.type,
+]);
+
+export const sessionReducer = (
+  state: SessionState = INITIAL_SESSION_STATE,
+  action: any,
+): SessionState => {
+  // `newSession` switches the active session. Let the inner reducer build the
+  // new SessionData, then register it as active.
+  if (action.type === sessionSlice.actions.newSession.type) {
+    const payloadId = (action.payload as Session | undefined)?.sessionId;
+    const existing = payloadId ? state.sessions[payloadId] : undefined;
+    if (existing) {
+      // Switching back to an already-known session: activate its OWN state.
+      // Deriving from the current session would overwrite the target's
+      // isStreaming / streamAborters / applyStates with the leaving chat's
+      // leftovers (killing its background stream and leaking approval cards).
+      return { ...state, activeSessionId: payloadId };
+    }
+    const current =
+      state.sessions[state.activeSessionId] ?? createSessionData();
+    const nextData = innerReducer(current, action);
+    const newId = nextData.id;
+    return {
+      ...state,
+      sessions: { ...state.sessions, [newId]: nextData },
+      activeSessionId: newId,
+      isSessionMetadataLoading: nextData.isSessionMetadataLoading,
+      allSessionMetadata: nextData.allSessionMetadata,
+    };
+  }
+
+  // updateSessionMetadata touches BOTH global metadata and the active session
+  // title — apply to a copy of the active session then sync globals back.
+  if (action.type === sessionSlice.actions.updateSessionMetadata.type) {
+    const current =
+      state.sessions[state.activeSessionId] ?? createSessionData();
+    const nextData = innerReducer(current, action);
+    return {
+      ...state,
+      sessions: { ...state.sessions, [state.activeSessionId]: nextData },
+      isSessionMetadataLoading: nextData.isSessionMetadataLoading,
+      allSessionMetadata: nextData.allSessionMetadata,
+    };
+  }
+
+  // Pure global metadata actions: mirror into the active session so the inner
+  // reducer can still handle them, then sync back to the top level.
+  if (GLOBAL_METADATA_ACTIONS.has(action.type)) {
+    const current =
+      state.sessions[state.activeSessionId] ?? createSessionData();
+    const nextData = innerReducer(current, action);
+    return {
+      ...state,
+      isSessionMetadataLoading: nextData.isSessionMetadataLoading,
+      allSessionMetadata: nextData.allSessionMetadata,
+      sessions: { ...state.sessions, [state.activeSessionId]: nextData },
+    };
+  }
+
+  // For aborter actions, the payload IS the target session id — route there so
+  // Stop can reach a background session's captured controller. Otherwise use
+  // `meta.sessionId` (from `inSession`) or fall back to the active session.
+  const targetId: string = SESSION_ID_PAYLOAD_ACTIONS.has(action.type)
+    ? (action.payload as string) || state.activeSessionId
+    : action?.meta?.sessionId || state.activeSessionId;
+  const target = state.sessions[targetId] ?? createSessionData(targetId);
+  const nextData = innerReducer(target, action);
+  if (nextData === target) return state;
+  return {
+    ...state,
+    sessions: { ...state.sessions, [targetId]: nextData },
+  };
+};
+
+export default sessionReducer;

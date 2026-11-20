@@ -1,13 +1,18 @@
+import {
+  inSession,
+  selectActiveSession,
+  selectSessionById,
+} from "../slices/sessionSlice";
 import { createAsyncThunk, unwrapResult } from "@reduxjs/toolkit";
 import { ChatMessage } from "core";
 import { renderContextItems } from "core/util/messageContent";
-import { selectCurrentToolCalls } from "../selectors/selectToolCalls";
 import {
   ChatHistoryItemWithMessageId,
   resetNextCodeBlockToApplyIndex,
   setPendingContinuation,
   streamUpdate,
 } from "../slices/sessionSlice";
+import { findAllCurToolCalls } from "../util";
 import { ThunkApiType } from "../store";
 import { streamNormalInput } from "./streamNormalInput";
 import { streamThunkWrapper } from "./streamThunkWrapper";
@@ -60,28 +65,36 @@ const inflightContinuations = new Map<string, Promise<void>>();
 
 export const streamResponseAfterToolCall = createAsyncThunk<
   void,
-  { toolCallId: string; depth?: number },
+  { toolCallId: string; depth?: number; sessionId?: string },
   ThunkApiType
 >(
   "chat/streamAfterToolCall",
-  async ({ toolCallId, depth = 0 }, { dispatch, getState }) => {
+  async ({ toolCallId, depth = 0, sessionId }, { dispatch, getState }) => {
     // Everything below is decided SYNCHRONOUSLY (before any await) so parallel
     // sibling dispatches all resolve consistently before either starts.
     const state = getState();
-    const history = state.session.history;
+    const owner = sessionId
+      ? selectSessionById(state, sessionId)
+      : selectActiveSession(state);
+    const owningSessionId = sessionId ?? owner.id;
+    const history = owner.history;
     const assistantMessage = history.findLast(
       (item) =>
         item.message.role === "assistant" &&
         item.toolCallStates?.some((tc) => tc.toolCallId === toolCallId),
     );
-    const dedupeKey = assistantMessage?.toolCallStates?.length
-      ? assistantMessage.toolCallStates
-          .map((tc) => tc.toolCallId)
-          .sort()
-          .join("|")
-      : toolCallId;
+    // Sibling dedupe is scoped by session so two sessions running the same
+    // tool-call ids can never collapse into one continuation.
+    const dedupeKey =
+      `${owningSessionId}::` +
+      (assistantMessage?.toolCallStates?.length
+        ? assistantMessage.toolCallStates
+            .map((tc) => tc.toolCallId)
+            .sort()
+            .join("|")
+        : toolCallId);
 
-    const toolCallState = selectCurrentToolCalls(state).find(
+    const toolCallState = findAllCurToolCalls(history).find(
       (tc) => tc.toolCallId === toolCallId,
     );
     if (!toolCallState) {
@@ -102,13 +115,13 @@ export const streamResponseAfterToolCall = createAsyncThunk<
     // early return through streamThunkWrapper dispatched setInactive mid-turn
     // and killed the continuation).
     if (!allDone) {
-      dispatch(resetNextCodeBlockToApplyIndex());
+      dispatch(inSession(resetNextCodeBlockToApplyIndex(), owningSessionId));
       const newMessage: ChatMessage = {
         role: "tool",
         content: renderContextItems(toolCallState.output ?? []),
         toolCallId,
       };
-      dispatch(streamUpdate([newMessage]));
+      dispatch(inSession(streamUpdate([newMessage]), owningSessionId));
       return;
     }
 
@@ -127,20 +140,32 @@ export const streamResponseAfterToolCall = createAsyncThunk<
       // The continuation now owns the turn: clear the pending-continuation flag
       // so the parent wrapper's `finally` cleanup no longer skips — and does not
       // re-end a turn that streamResponseAfterToolCall is about to drive.
-      dispatch(setPendingContinuation(false));
+      dispatch(inSession(setPendingContinuation(false), owningSessionId));
       await dispatch(
-        streamThunkWrapper(async () => {
-          dispatch(resetNextCodeBlockToApplyIndex());
+        streamThunkWrapper({
+          sessionId: owningSessionId,
+          run: async () => {
+            dispatch(
+              inSession(resetNextCodeBlockToApplyIndex(), owningSessionId),
+            );
 
-          // Create and dispatch the tool message
-          const newMessage: ChatMessage = {
-            role: "tool",
-            content: renderContextItems(toolCallState.output ?? []),
-            toolCallId,
-          };
-          dispatch(streamUpdate([newMessage]));
+            // Create and dispatch the tool message
+            const newMessage: ChatMessage = {
+              role: "tool",
+              content: renderContextItems(toolCallState.output ?? []),
+              toolCallId,
+            };
+            dispatch(inSession(streamUpdate([newMessage]), owningSessionId));
 
-          unwrapResult(await dispatch(streamNormalInput({ depth: depth + 1 })));
+            unwrapResult(
+              await dispatch(
+                streamNormalInput({
+                  depth: depth + 1,
+                  sessionId: owningSessionId,
+                }),
+              ),
+            );
+          },
         }),
       );
     })();

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { ChatHistoryItem } from "core";
 import { renderChatMessage, stripImages } from "core/util/messageContent";
 import { useEffect, useState } from "react";
@@ -21,7 +22,9 @@ interface StepContainerProps {
 export default function StepContainer(props: StepContainerProps) {
   const dispatch = useDispatch();
   const [isTruncated, setIsTruncated] = useState(false);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
   const uiConfig = useAppSelector(selectUIConfig);
 
   // Calculate dimming and indicator state based on latest summary index
@@ -32,7 +35,7 @@ export default function StepContainer(props: StepContainerProps) {
     latestSummaryIndex !== -1 && props.index === latestSummaryIndex;
 
   const historyItemAfterThis = useAppSelector(
-    (state) => state.session.history[props.index + 1],
+    (state) => selectActiveSession(state).history[props.index + 1],
   );
   const showResponseActions =
     (props.isLast || historyItemAfterThis?.message.role === "user") &&

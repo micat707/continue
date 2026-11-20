@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../../redux/slices/sessionSlice";
 import { useContext, useRef, useState } from "react";
 import { IdeMessengerContext } from "../../../../context/IdeMessenger";
 import { useWebviewListener } from "../../../../hooks/useWebviewListener";
@@ -69,7 +70,9 @@ interface PendingApproval {
 
 export function useDeepAgentHitl() {
   const ideMessenger = useContext(IdeMessengerContext);
-  const currentSessionId = useAppSelector((state) => state.session.id);
+  const currentSessionId = useAppSelector(
+    (state) => selectActiveSession(state).id,
+  );
   // useWebviewListener registers its handler once; read the live session id
   // through a ref so the approval is stamped with the session that is actually
   // displayed when the interrupt message arrives.
@@ -94,7 +97,7 @@ export function useDeepAgentHitl() {
     // root cause of approval cards appearing in the wrong chat: the interrupt
     // can arrive after the user has already switched tabs.
     const ownerSessionId: string | undefined =
-      payload?.chatSessionId ?? currentSessionIdRef.current;
+      payload?.sessionId ?? currentSessionIdRef.current;
 
     const items = actions.map((a, i): ReviewChangeItem => {
       // Command approval: the human must see the FULL command before
@@ -166,8 +169,13 @@ export function useDeepAgentHitl() {
   });
 
   const send = (requestId: string, decisions: HitlDecision[]) => {
+    // Echo the owning session so the IDE resolves this specific session's
+    // pending request (defensive — requestId is already unique, but the id
+    // makes the routing explicit and audit-able).
+    const owner = pending[requestId]?.sessionId;
     void ideMessenger.post("deepAgentInterruptResponse", {
       requestId,
+      sessionId: owner,
       decisions,
     });
     setPending((prev) => {

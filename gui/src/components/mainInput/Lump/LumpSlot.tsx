@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { ReactNode, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useAppSelector } from "../../../redux/hooks";
@@ -32,8 +33,10 @@ export function LumpSlot({ children }: { children: ReactNode }) {
   // measurement: the inner wrapper is content-sized (floating children are
   // positioned against the outer `relative px-2` wrapper, not this one).
   const [reserved, setReserved] = useState<number | undefined>(undefined);
-  const sessionId = useAppSelector((state) => state.session.id);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
+  const sessionId = useAppSelector((state) => selectActiveSession(state).id);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
   const busyApply = useAppSelector((state) =>
     selectApplyStatesForCurrentSession(state).some(
       (applyState) =>

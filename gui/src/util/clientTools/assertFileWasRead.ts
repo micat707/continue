@@ -2,6 +2,7 @@ import { BuiltInToolNames } from "core/tools/builtIn";
 import { ContinueError, ContinueErrorReason } from "core/util/errors";
 import { getUriPathBasename } from "core/util/uri";
 import type { ClientToolExtras } from "./callClientTool";
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 
 const READ_TOOL_NAMES = new Set<string>([
   BuiltInToolNames.ReadFile,
@@ -28,7 +29,9 @@ export function assertFileWasRead(
   fileUri: string,
   extras: ClientToolExtras,
 ): void {
-  const history = extras.getState()?.session?.history ?? [];
+  const history = extras.getState()
+    ? selectActiveSession(extras.getState()).history
+    : [];
   const targetBasename = getUriPathBasename(fileUri).toLowerCase();
   const matchesFile = (call: { parsedArgs?: { filepath?: unknown } }) =>
     typeof call.parsedArgs?.filepath === "string" &&

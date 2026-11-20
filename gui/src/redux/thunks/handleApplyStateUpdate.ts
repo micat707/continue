@@ -1,3 +1,8 @@
+import {
+  inSession,
+  selectActiveSession,
+  selectSessionById,
+} from "../slices/sessionSlice";
 import { createAsyncThunk } from "@reduxjs/toolkit";
 import { ApplyState, ApplyToFilePayload } from "core";
 import { EDIT_MODE_STREAM_ID } from "core/edit/constants";
@@ -25,15 +30,21 @@ export const handleApplyStateUpdate = createAsyncThunk<
 >(
   "apply/handleStateUpdate",
   async (applyState, { dispatch, getState, extra }) => {
+    // ApplyState carries the owning session id when available (edit tools tag
+    // it). Fall back to the active session for legacy/IDE paths that omit it.
+    const sid = applyState.sessionId;
+    const sessionOf = (s: ReturnType<typeof getState>) =>
+      sid ? selectSessionById(s, sid) : selectActiveSession(s);
+    const owningSessionId = sid ?? selectActiveSession(getState()).id;
     console.log(
-      `[continue][apply] updateApplyState status=${applyState.status} streamId=${applyState.streamId} toolCallId=${applyState.toolCallId ?? "n/a"} filepath=${applyState.filepath ?? "n/a"}`,
+      `[continue][apply] updateApplyState status=${applyState.status} streamId=${applyState.streamId} toolCallId=${applyState.toolCallId ?? "n/a"} filepath=${applyState.filepath ?? "n/a"} session=${owningSessionId}`,
     );
     if (applyState.streamId === EDIT_MODE_STREAM_ID) {
       dispatch(updateEditStateApplyState(applyState));
 
       if (applyState.status === "closed") {
         const toolCallState = findToolCallById(
-          getState().session.history,
+          sessionOf(getState()).history,
           applyState.toolCallId!,
         );
         if (toolCallState) {
@@ -50,20 +61,21 @@ export const handleApplyStateUpdate = createAsyncThunk<
       // with a spinning card and no LLM continuation.
       let effectiveState = applyState;
       if (!effectiveState.toolCallId) {
-        const stored =
-          getState?.()?.session?.codeBlockApplyStates?.states?.find(
-            (s) => s.streamId === effectiveState.streamId,
-          );
+        const stored = getState
+          ? sessionOf(getState()).codeBlockApplyStates?.states?.find(
+              (s) => s.streamId === effectiveState.streamId,
+            )
+          : undefined;
         if (stored?.toolCallId) {
           effectiveState = { ...effectiveState, toolCallId: stored.toolCallId };
         }
       }
-      dispatch(updateApplyState(effectiveState));
+      dispatch(inSession(updateApplyState(effectiveState), owningSessionId));
 
       // Handle apply status updates - use toolCallId from event payload
       if (effectiveState.toolCallId) {
         const toolCallState = findToolCallById(
-          getState().session.history,
+          sessionOf(getState()).history,
           effectiveState.toolCallId,
         );
 
@@ -87,14 +99,15 @@ export const handleApplyStateUpdate = createAsyncThunk<
             logToolUsage(toolCallState, accepted, true, extra.ideMessenger);
 
             // Log edit outcome for Agent Mode
-            const newApplyState =
-              getState().session.codeBlockApplyStates.states.find(
-                (s) => s.streamId === applyState.streamId,
-              );
+            const newApplyState = sessionOf(
+              getState(),
+            ).codeBlockApplyStates.states.find(
+              (s) => s.streamId === applyState.streamId,
+            );
             const newState = getState();
             if (newApplyState) {
               void logAgentModeEditOutcome(
-                newState.session.history,
+                sessionOf(newState).history,
                 newState.config.config,
                 toolCallState,
                 newApplyState,
@@ -106,9 +119,12 @@ export const handleApplyStateUpdate = createAsyncThunk<
             if (accepted) {
               if (toolCallState.status !== "errored") {
                 dispatch(
-                  acceptToolCall({
-                    toolCallId: effectiveState.toolCallId,
-                  }),
+                  inSession(
+                    acceptToolCall({
+                      toolCallId: effectiveState.toolCallId,
+                    }),
+                    owningSessionId,
+                  ),
                 );
 
                 // Add autoformatting diff to tool output if present
@@ -161,6 +177,7 @@ export const handleApplyStateUpdate = createAsyncThunk<
               void dispatch(
                 streamResponseAfterToolCall({
                   toolCallId: effectiveState.toolCallId,
+                  sessionId: owningSessionId,
                 }),
               );
             }
@@ -193,14 +210,18 @@ export const handleApplyStateUpdate = createAsyncThunk<
             );
             if (toolCallState.status !== "errored") {
               dispatch(
-                acceptToolCall({
-                  toolCallId: effectiveState.toolCallId,
-                }),
+                inSession(
+                  acceptToolCall({
+                    toolCallId: effectiveState.toolCallId,
+                  }),
+                  owningSessionId,
+                ),
               );
             }
             void dispatch(
               streamResponseAfterToolCall({
                 toolCallId: effectiveState.toolCallId,
+                sessionId: owningSessionId,
               }),
             );
           }

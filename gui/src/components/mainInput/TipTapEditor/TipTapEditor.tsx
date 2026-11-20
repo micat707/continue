@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { Editor, EditorContent, JSONContent } from "@tiptap/react";
 import { ContextProviderDescription, InputModifiers } from "core";
 import { modelSupportsImages } from "core/llm/autodetect";
@@ -53,9 +54,15 @@ function TipTapEditorInner(props: TipTapEditorProps) {
   const isOSREnabled = useIsOSREnabled();
 
   const defaultModel = useAppSelector(selectSelectedChatModel);
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
-  const historyLength = useAppSelector((store) => store.session.history.length);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
+  const historyLength = useAppSelector(
+    (store) => selectActiveSession(store).history.length,
+  );
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
 
   const { editor, onEnter } = createEditorConfig({
     props,

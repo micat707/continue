@@ -70,21 +70,36 @@ import {
 } from "./toolFormat";
 
 /**
- * Handle the permission panel uses to read/clear the active chat's session
- * memory. `impl` is (re)assigned on every `wrapWithDeepAgent` call, so it
- * always points at the most recently created chat wrapper.
+ * Per-chat permission memory handle. Each session owns an independent handle
+ * (approved / read-approved / denied paths + ephemeral policy layer). The
+ * permission panel is a single global UI, so `activeSessionPermissions.impl`
+ * points at the most recently used session's handle for backwards
+ * compatibility, while `getSessionPermissionHandle(id)` addresses any session.
  */
-export const activeSessionPermissions: {
-  impl?: {
-    getMemory(): {
-      approved: string[];
-      readApproved: string[];
-      denied: string[];
-    };
-    clear(): void;
-    getSessionPolicy(): PermissionConfig;
+export interface SessionPermissionHandle {
+  getMemory(): {
+    approved: string[];
+    readApproved: string[];
+    denied: string[];
   };
-} = {};
+  clear(): void;
+  getSessionPolicy(): PermissionConfig;
+}
+
+const sessionPermissionHandles = new Map<string, SessionPermissionHandle>();
+
+/** Handle for the global permission panel (the most recently used session). */
+export const activeSessionPermissions: { impl?: SessionPermissionHandle } = {};
+
+export function getSessionPermissionHandle(
+  sessionId?: string,
+): SessionPermissionHandle | undefined {
+  if (sessionId) {
+    const handle = sessionPermissionHandles.get(sessionId);
+    if (handle) return handle;
+  }
+  return activeSessionPermissions.impl;
+}
 
 /** Tiny multi-producer / single-consumer queue for merging two event streams. */
 type QueueItem = { kind: "text" | "thinking"; text: string };
@@ -135,18 +150,54 @@ class AsyncTextQueue {
  * clutter the change list — only the files the agent deliberately wrote/edited
  * count as "changes this conversation made".
  */
-const sessionChangedFiles = new Set<string>();
+const changedFilesBySession = new Map<string, Set<string>>();
 
-/** Read-only accessor for the GUI's `getSessionChangedFiles` ide command. */
-export function getSessionChangedFiles(): string[] {
-  return Array.from(sessionChangedFiles);
+/** Get (or create) the changed-file set for a specific chat session. */
+function getSessionChangedFilesSet(sessionId: string): Set<string> {
+  let set = changedFilesBySession.get(sessionId);
+  if (!set) {
+    set = new Set<string>();
+    changedFilesBySession.set(sessionId, set);
+  }
+  return set;
 }
 
-export function wrapWithDeepAgent(
+/**
+ * Read-only accessor for the GUI's `getSessionChangedFiles` ide command.
+ * With a `sessionId`, returns only that session's files; without one, returns
+ * the union (backwards compatibility for the legacy global call).
+ */
+export function getSessionChangedFiles(sessionId?: string): string[] {
+  if (sessionId) {
+    return Array.from(changedFilesBySession.get(sessionId) ?? []);
+  }
+  const all = new Set<string>();
+  for (const files of changedFilesBySession.values()) {
+    for (const f of files) all.add(f);
+  }
+  return Array.from(all);
+}
+
+/**
+ * One isolated DeepAgent runtime for a single chat session. Owns its own
+ * agent, adapter, approval memory and changed-file set, so a turn in session B
+ * can never clear or inherit the permission state of session A.
+ */
+type SessionRuntime = {
+  streamChat(
+    messages: ChatMessage[],
+    signal: AbortSignal,
+    options: CompletionOptions,
+    messageOptions?: any,
+  ): AsyncGenerator<ChatMessage>;
+};
+
+function buildSessionRuntime(
   underlying: ILLM,
   rootOverride: string | undefined,
+  sessionId: string,
   onInvoke?: () => void,
-): ILLM {
+): SessionRuntime {
   const adapter = new ContinueLLMAdapter({
     llm: underlying,
     // Re-evaluated on every model call, so folders added via "Add Folder to
@@ -156,11 +207,13 @@ export function wrapWithDeepAgent(
   // Human-in-the-loop + permission policy. A path the user APPROVED this session
   // is let through without re-prompting; a path the user DENIED is hard-blocked.
   // Everything else is decided by the three-layer policy (global → workspace →
-  // session) resolved in `permEngine`. State lives in this closure, so it
-  // persists across turns of the same chat. NOTE: applyDeepAgentWrap attaches
-  // the wrapper to the MODEL object (once), not to a session — the memory is
-  // scoped to a session by the new-session reset inside streamChat below.
+  // session) resolved in `permEngine`. All of this state lives in THIS runtime's
+  // closure — one per chat session — so it persists across that chat's turns and
+  // is completely isolated from every other session. No "first turn clears
+  // memory" heuristic is needed any more.
   const approvedPaths = new Set<string>();
+  // Files this session wrote/edited — private set keyed by the owning session.
+  const sessionChangedFiles = getSessionChangedFilesSet(sessionId);
   // Read-only grants: approving a read-style tool (ls/read_file/grep…) unlocks
   // the approved subtree for READ tools only — write tools always re-prompt.
   const approvedReadPaths = new Set<string>();
@@ -173,10 +226,10 @@ export function wrapWithDeepAgent(
     untrustRules: [],
   };
 
-  // Expose this chat's session permission memory to the standalone permission
-  // panel (read / clear). Single active wrapper at a time, so a module-level
-  // handle is sufficient.
-  activeSessionPermissions.impl = {
+  // Expose this session's permission memory: register a per-session handle (so
+  // the panel can address any session by id) and also point the legacy global
+  // handle at it for the "most recently used session" compatibility path.
+  const permissionHandle: SessionPermissionHandle = {
     getMemory: () => ({
       approved: [...approvedPaths],
       readApproved: [...approvedReadPaths],
@@ -189,6 +242,8 @@ export function wrapWithDeepAgent(
     },
     getSessionPolicy: () => sessionPolicy,
   };
+  sessionPermissionHandles.set(sessionId, permissionHandle);
+  activeSessionPermissions.impl = permissionHandle;
 
   // Re-read settings + re-merge the three layers. Called at agent creation and
   // at the start of every turn so setting changes take effect without a reload.
@@ -372,29 +427,18 @@ export function wrapWithDeepAgent(
     interruptOn,
   });
 
-  // Clone the model: inherit its prototype (all methods) and copy its own
-  // instance fields (title, provider, options, capabilities, ...).
-  const wrapper: any = Object.create(Object.getPrototypeOf(underlying));
-  Object.assign(wrapper, underlying);
-  wrapper.__deepAgent = true;
-  wrapper.__original = underlying;
-
-  wrapper.streamChat = async function* (
+  const streamChat = async function* (
     messages: ChatMessage[],
     _signal: AbortSignal,
     _options: CompletionOptions,
     _messageOptions?: any,
   ): AsyncGenerator<ChatMessage> {
-    // The owning chat session id is threaded in from the GUI via messageOptions.
-    // Captured per-call (not read from any module-global) so an approval is
-    // always attributed to the session that started this stream, even if the
-    // user switches chats while the interrupt is in flight.
-    const chatSessionId: string | undefined = _messageOptions?.chatSessionId;
-    // Hard evidence in the Extension Host log that THIS chat turn went through
-    // the DeepAgent wrapper (Help → Toggle Developer Tools → Console, or
-    // Output → "Extension Host").
+    // `sessionId` is the runtime's owning session (captured when this runtime
+    // was built by the singleton router), NOT a value read from a module-global.
+    // This runtime's approval memory / changed files are private to that chat,
+    // so there is no cross-session state to reset and no first-turn heuristic.
     console.log(
-      `[DeepAgent] >>> chat turn entered DeepAgent wrapper | model=${(underlying as any).title ?? underlying.model} | messages=${messages.length} | roots=${describeRoots(rootOverride)}`,
+      `[DeepAgent] >>> chat turn entered DeepAgent wrapper | session=${sessionId} | model=${(underlying as any).title ?? underlying.model} | messages=${messages.length} | roots=${describeRoots(rootOverride)}`,
     );
     onInvoke?.();
 
@@ -406,24 +450,6 @@ export function wrapWithDeepAgent(
     // Re-read the permission policy from VS Code settings for this turn so
     // global/workspace changes apply without a reload.
     recomputePolicy();
-
-    // Session scoping of the approval memory: the wrapper is attached to the
-    // MODEL (applyDeepAgentWrap wraps once), not to a chat session — without
-    // this reset, approvals granted in one chat would silently leak into every
-    // later chat. The GUI sends the full history on every turn, so a turn with
-    // no prior assistant message IS the first turn of a new session: wipe the
-    // grants/denials from the previous chat.
-    if (!messages.some((m) => m.role === "assistant")) {
-      if (approvedPaths.size || approvedReadPaths.size || deniedPaths.size) {
-        console.log(
-          "[DeepAgent] new session detected — clearing approval memory",
-        );
-        approvedPaths.clear();
-        approvedReadPaths.clear();
-        deniedPaths.clear();
-        sessionChangedFiles.clear();
-      }
-    }
 
     const lcMessages: BaseMessage[] = [];
     for (const m of messages) {
@@ -653,7 +679,7 @@ export function wrapWithDeepAgent(
           const decisions = await requestHitlDecision(
             payload,
             _signal,
-            chatSessionId,
+            sessionId,
           );
           // Fold the user's decision into this session's permission memory so
           // the interrupt does not re-fire for the same path this chat:
@@ -713,6 +739,55 @@ export function wrapWithDeepAgent(
     } finally {
       setActiveTurnAbort(undefined);
     }
+  };
+
+  return { streamChat };
+}
+
+/**
+ * The singleton model wrapper attached by `applyDeepAgentWrap`. `core` holds a
+ * single reference to this object, so it cannot be replaced per session.
+ * Instead it acts as a router: on each turn it extracts the owning session id
+ * from `messageOptions` and delegates to that session's isolated runtime,
+ * creating one on first use. Session A and B therefore get independent agents,
+ * approval memory and changed-file sets even though they share this wrapper.
+ */
+export function wrapWithDeepAgent(
+  underlying: ILLM,
+  rootOverride: string | undefined,
+  onInvoke?: () => void,
+): ILLM {
+  // Clone the model: inherit its prototype (all methods) and copy its own
+  // instance fields (title, provider, options, capabilities, ...).
+  const wrapper: any = Object.create(Object.getPrototypeOf(underlying));
+  Object.assign(wrapper, underlying);
+  wrapper.__deepAgent = true;
+  wrapper.__original = underlying;
+
+  const runtimes = new Map<string, SessionRuntime>();
+  const DEFAULT_SESSION_ID = "__default__";
+
+  wrapper.streamChat = async function* (
+    messages: ChatMessage[],
+    signal: AbortSignal,
+    options: CompletionOptions,
+    messageOptions?: any,
+  ): AsyncGenerator<ChatMessage> {
+    const sessionId: string =
+      messageOptions?.sessionId ??
+      messageOptions?.chatSessionId ??
+      DEFAULT_SESSION_ID;
+    let runtime = runtimes.get(sessionId);
+    if (!runtime) {
+      runtime = buildSessionRuntime(
+        underlying,
+        rootOverride,
+        sessionId,
+        onInvoke,
+      );
+      runtimes.set(sessionId, runtime);
+    }
+    yield* runtime.streamChat(messages, signal, options, messageOptions);
   };
 
   return wrapper as ILLM;

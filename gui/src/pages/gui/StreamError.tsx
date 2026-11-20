@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
@@ -51,7 +52,7 @@ const StreamErrorDialog = ({ error }: StreamErrorProps) => {
     void navigator.clipboard.writeText(parsedError);
   };
 
-  const history = useAppSelector((store) => store.session.history);
+  const history = useAppSelector((store) => selectActiveSession(store).history);
 
   const checkKeysButton = apiKeyUrl ? (
     <GhostButton

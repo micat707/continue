@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -18,7 +19,7 @@ import { ModeIcon } from "./ModeIcon";
 
 export function ModeSelect() {
   const dispatch = useAppDispatch();
-  const mode = useAppSelector((store) => store.session.mode);
+  const mode = useAppSelector((store) => selectActiveSession(store).mode);
   const selectedModel = useAppSelector(selectSelectedChatModel);
 
   const isGoodAtAgentMode = useMemo(() => {

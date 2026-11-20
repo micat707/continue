@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { createAsyncThunk } from "@reduxjs/toolkit";
 import { ChatHistoryItem, ContextItemWithId } from "core";
 import { CodeBlock } from "../../components/mainInput/TipTapEditor/extensions";
@@ -80,7 +81,9 @@ export const updateFileSymbolsFromHistory = createAsyncThunk<
     const state = getState();
 
     // Get unique context item file uris from all history
-    const contextItems = getContextItemsFromHistory(state.session.history);
+    const contextItems = getContextItemsFromHistory(
+      selectActiveSession(state).history,
+    );
 
     const uniqueUris = new Set(
       contextItems
@@ -89,7 +92,7 @@ export const updateFileSymbolsFromHistory = createAsyncThunk<
     );
 
     // Remove if already in symbols
-    Object.keys(state.session.symbols).forEach((key) => {
+    Object.keys(selectActiveSession(state).symbols).forEach((key) => {
       uniqueUris.delete(key);
     });
 

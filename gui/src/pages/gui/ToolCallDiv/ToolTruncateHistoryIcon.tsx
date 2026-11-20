@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { BarsArrowUpIcon } from "@heroicons/react/24/outline";
 import { chatMessageIsEmpty } from "core/llm/messages";
 import { findLastIndex } from "core/util/findLast";
@@ -12,8 +13,10 @@ export function ToolTruncateHistoryIcon({
 }: {
   historyIndex: number;
 }) {
-  const isStreaming = useAppSelector((state) => state.session.isStreaming);
-  const history = useAppSelector((state) => state.session.history);
+  const isStreaming = useAppSelector(
+    (state) => selectActiveSession(state).isStreaming,
+  );
+  const history = useAppSelector((state) => selectActiveSession(state).history);
   const lastMessageIndex = useMemo(() => {
     return findLastIndex(history, (item) => !chatMessageIsEmpty(item.message));
   }, [history]);

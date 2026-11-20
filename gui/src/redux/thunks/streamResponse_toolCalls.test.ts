@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../slices/sessionSlice";
 import { JSONContent } from "@tiptap/core";
 import { AssistantChatMessage, InputModifiers, PromptLog } from "core";
 import { describe, expect, it, vi } from "vitest";
@@ -87,7 +88,7 @@ describe("streamResponseThunk - tool calls", () => {
   it("should execute streaming flow with tool call execution", async () => {
     // Set up auto-approved tool setting for our test tool
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: {
           id: "1",
@@ -100,7 +101,7 @@ describe("streamResponseThunk - tool calls", () => {
     initialState.ui.toolSettings = {
       [grepName]: "allowedWithoutPermission", // Auto-approve this tool
     };
-    initialState.session.id = "session-123";
+    selectActiveSession(initialState).id = "session-123";
     initialState.config.config.tools = [grepTool];
     const mockStoreWithToolSettings = createMockStore(initialState);
     const mockIdeMessengerWithTool = mockStoreWithToolSettings.mockIdeMessenger;
@@ -188,15 +189,17 @@ describe("streamResponseThunk - tool calls", () => {
 
     // Track isStreaming state changes to detect UI flashing during auto-approved tool execution
     const streamingStateChanges: boolean[] = [];
-    let lastStreamingState = (mockStoreWithToolSettings.getState() as RootState)
-      .session.isStreaming;
+    let lastStreamingState = selectActiveSession(
+      mockStoreWithToolSettings.getState() as RootState,
+    ).isStreaming;
     // Record the initial state
     streamingStateChanges.push(lastStreamingState);
 
     // Subscribe to store changes to catch ALL state updates
     const unsubscribe = mockStoreWithToolSettings.subscribe(() => {
-      const currentState = (mockStoreWithToolSettings.getState() as RootState)
-        .session.isStreaming;
+      const currentState = selectActiveSession(
+        mockStoreWithToolSettings.getState() as RootState,
+      ).isStreaming;
       if (currentState !== lastStreamingState) {
         console.log(
           `Store subscription: isStreaming changed from ${lastStreamingState} to ${currentState}`,
@@ -216,8 +219,8 @@ describe("streamResponseThunk - tool calls", () => {
 
     // Debug: check what happened
     const debugState = mockStoreWithToolSettings.getState() as RootState;
-    const finalStreamingState = debugState.session.isStreaming;
-    const toolCallStates = debugState.session.history.flatMap(
+    const finalStreamingState = selectActiveSession(debugState).isStreaming;
+    const toolCallStates = selectActiveSession(debugState).history.flatMap(
       (item) => item.toolCallStates || [],
     );
 
@@ -428,7 +431,7 @@ describe("streamResponseThunk - tool calls", () => {
     const finalState = mockStoreWithToolSettings.getState() as RootState;
 
     // Check that the tool was executed (status should be 'done' if auto-approved and executed)
-    const toolCallState = finalState.session.history.find(
+    const toolCallState = selectActiveSession(finalState).history.find(
       (item) => item.toolCallStates && item.toolCallStates.length > 0,
     )?.toolCallStates?.[0];
 
@@ -550,7 +553,7 @@ describe("streamResponseThunk - tool calls", () => {
   it("should handle tool call requiring manual approval", async () => {
     // Create store with tool settings that require manual approval (ask first)
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: {
           id: "1",
@@ -560,7 +563,7 @@ describe("streamResponseThunk - tool calls", () => {
         contextItems: [],
       },
     ];
-    initialState.session.id = "session-123";
+    selectActiveSession(initialState).id = "session-123";
     initialState.ui.toolSettings = {
       [grepName]: "allowedWithPermission", // Requires manual approval
     };
@@ -621,8 +624,9 @@ describe("streamResponseThunk - tool calls", () => {
     mockStoreWithManualApproval.dispatch = (action: any) => {
       const result = originalDispatch(action);
       // Capture isStreaming state after each action
-      const currentState = (mockStoreWithManualApproval.getState() as RootState)
-        .session.isStreaming;
+      const currentState = selectActiveSession(
+        mockStoreWithManualApproval.getState() as RootState,
+      ).isStreaming;
       streamingStates.push(currentState);
       return result;
     };
@@ -640,9 +644,9 @@ describe("streamResponseThunk - tool calls", () => {
 
     // Since tool requires approval, isStreaming should become false after completion
     // but should stay true throughout the initial streaming phase
-    const finalStreamingState = (
-      mockStoreWithManualApproval.getState() as RootState
-    ).session.isStreaming;
+    const finalStreamingState = selectActiveSession(
+      mockStoreWithManualApproval.getState() as RootState,
+    ).isStreaming;
     expect(finalStreamingState).toBe(false); // Final state should be false since we're waiting for approval
 
     // Verify exact action sequence includes tool generation but NO execution
@@ -1056,7 +1060,7 @@ describe("streamResponseThunk - tool calls", () => {
   it("should handle complete user approval and tool execution flow", async () => {
     // Create store with tool settings that require manual approval
     const initialState = getRootStateWithClaude();
-    initialState.session.history = [
+    selectActiveSession(initialState).history = [
       {
         message: {
           id: "1",
@@ -1069,7 +1073,7 @@ describe("streamResponseThunk - tool calls", () => {
     initialState.ui.toolSettings = {
       [grepName]: "allowedWithPermission", // Requires manual approval
     };
-    initialState.session.id = "session-123";
+    selectActiveSession(initialState).id = "session-123";
     initialState.config.config.tools = [grepTool];
 
     const mockStoreWithApproval = createMockStore(initialState);
@@ -1171,14 +1175,15 @@ describe("streamResponseThunk - tool calls", () => {
 
     // Track isStreaming state changes throughout the entire test
     const streamingStateChanges: boolean[] = [];
-    let lastStreamingState = (mockStoreWithApproval.getState() as RootState)
-      .session.isStreaming;
+    let lastStreamingState = selectActiveSession(
+      mockStoreWithApproval.getState() as RootState,
+    ).isStreaming;
     const originalDispatch = mockStoreWithApproval.dispatch;
     mockStoreWithApproval.dispatch = (action: any) => {
       const result = originalDispatch(action);
-      const currentStreamingState = (
-        mockStoreWithApproval.getState() as RootState
-      ).session.isStreaming;
+      const currentStreamingState = selectActiveSession(
+        mockStoreWithApproval.getState() as RootState,
+      ).isStreaming;
       // Only record when the state actually changes
       if (currentStreamingState !== lastStreamingState) {
         streamingStateChanges.push(currentStreamingState);
@@ -1882,7 +1887,7 @@ describe("streamResponseThunk - tool calls", () => {
   describe("dynamic policy evaluation", () => {
     it("should call tools/evaluatePolicy with correct parameters", async () => {
       const initialState = getRootStateWithClaude();
-      initialState.session.history = [
+      selectActiveSession(initialState).history = [
         {
           message: { id: "1", role: "user", content: "Run echo hello" },
           contextItems: [],
@@ -1973,7 +1978,7 @@ describe("streamResponseThunk - tool calls", () => {
 
     it("should respect disabled policy", async () => {
       const initialState = getRootStateWithClaude();
-      initialState.session.history = [
+      selectActiveSession(initialState).history = [
         {
           message: { id: "1", role: "user", content: "Run ls" },
           contextItems: [],
@@ -1989,7 +1994,9 @@ describe("streamResponseThunk - tool calls", () => {
 
       // Simple mock - just return disabled policy
       mockIdeMessenger.responseHandlers["llm/compileChat"] = async (data) => {
-        const history = (mockStore.getState() as RootState).session.history;
+        const history = selectActiveSession(
+          mockStore.getState() as RootState,
+        ).history;
         return {
           compiledChatMessages: [
             ...history.map((i) => i.message),
@@ -2075,7 +2082,7 @@ describe("streamResponseThunk - tool calls", () => {
 
     it("should handle evaluation errors gracefully", async () => {
       const initialState = getRootStateWithClaude();
-      initialState.session.history = [
+      selectActiveSession(initialState).history = [
         {
           message: { id: "1", role: "user", content: "Do something" },
           contextItems: [],
@@ -2120,7 +2127,9 @@ describe("streamResponseThunk - tool calls", () => {
           }
         }
         mockIdeMessenger.responseHandlers["llm/compileChat"] = async (data) => {
-          const history = (mockStore.getState() as RootState).session.history;
+          const history = selectActiveSession(
+            mockStore.getState() as RootState,
+          ).history;
           return {
             compiledChatMessages: [
               ...history.map((i) => i.message),
@@ -2203,8 +2212,9 @@ describe("streamResponseThunk - tool calls", () => {
       mockTerminalIdeMessenger.responseHandlers["llm/compileChat"] = async (
         data,
       ) => {
-        const history = (mockStoreWithTerminalTool.getState() as RootState)
-          .session.history;
+        const history = selectActiveSession(
+          mockStoreWithTerminalTool.getState() as RootState,
+        ).history;
         return {
           compiledChatMessages: [
             ...history.map((i) => i.message),
@@ -2278,7 +2288,7 @@ describe("streamResponseThunk - tool calls", () => {
 
       // Get final state
       const finalState = mockStoreWithTerminalTool.getState() as RootState;
-      const toolCallStates = finalState.session.history.flatMap(
+      const toolCallStates = selectActiveSession(finalState).history.flatMap(
         (item) => item.toolCallStates || [],
       );
 

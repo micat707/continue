@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../../redux/slices/sessionSlice";
 import { Dispatch } from "@reduxjs/toolkit";
 import { JSONContent } from "@tiptap/react";
 import {
@@ -145,7 +146,7 @@ async function gatherContextItems({
   );
   let contextItems: ContextItemWithId[] = [];
 
-  const isInAgentMode = getState().session.mode === "agent";
+  const isInAgentMode = selectActiveSession(getState()).mode === "agent";
 
   // Process context item attributes
   for (const item of deduplicatedInputs) {

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { ToolPolicy } from "@continuedev/terminal-security";
 import {
   ChevronDownIcon,
@@ -32,7 +33,7 @@ export function ToolPolicyItem(props: ToolPolicyItemProps) {
     (state) => state.ui.toolSettings[props.tool.function.name],
   );
   const [isExpanded, setIsExpanded] = useState(false);
-  const mode = useAppSelector((state) => state.session.mode);
+  const mode = useAppSelector((state) => selectActiveSession(state).mode);
 
   useEffect(() => {
     if (!policy) {

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { ChevronDownIcon } from "@heroicons/react/24/outline";
 import { inferResolvedUriFromRelativePath } from "core/util/ideUtils";
 import { renderContextItems } from "core/util/messageContent";
@@ -57,7 +58,7 @@ export function StepContainerPreToolbar({
   collapsible,
 }: StepContainerPreToolbarProps) {
   const ideMessenger = useContext(IdeMessengerContext);
-  const history = useAppSelector((state) => state.session.history);
+  const history = useAppSelector((state) => selectActiveSession(state).history);
   const [isExpanded, setIsExpanded] = useState(expanded ?? true);
 
   const [relativeFilepathUri, setRelativeFilepathUri] = useState<string | null>(
@@ -76,7 +77,7 @@ export function StepContainerPreToolbar({
   } = useIdeMessengerRequest("fileExists", fileExistsInput);
 
   const nextCodeBlockIndex = useAppSelector(
-    (state) => state.session.codeBlockApplyStates.curIndex,
+    (state) => selectActiveSession(state).codeBlockApplyStates.curIndex,
   );
 
   const applyState = useAppSelector((state) =>
@@ -123,7 +124,9 @@ export function StepContainerPreToolbar({
   const hasFileExtension =
     relativeFilepath && /\.[0-9a-z]+$/i.test(relativeFilepath);
 
-  const isStreaming = useAppSelector((store) => store.session.isStreaming);
+  const isStreaming = useAppSelector(
+    (store) => selectActiveSession(store).isStreaming,
+  );
 
   const isLastItem = useMemo(() => {
     return itemIndex === history.length - 1;

@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import { NewSessionButton } from "./NewSessionButton.js";
 import React, {
@@ -208,12 +209,14 @@ const RenameInput = styled.input`
 export const TabBar = React.forwardRef<HTMLDivElement>((_, ref) => {
   const dispatch = useDispatch<AppDispatch>();
   const ideMessenger = useContext(IdeMessengerContext);
-  const currentSessionId = useSelector((state: RootState) => state.session.id);
+  const currentSessionId = useSelector(
+    (state: RootState) => selectActiveSession(state).id,
+  );
   const currentSessionTitle = useSelector(
-    (state: RootState) => state.session.title,
+    (state: RootState) => selectActiveSession(state).title,
   );
   const hasHistory = useSelector(
-    (state: RootState) => state.session.history.length > 0,
+    (state: RootState) => selectActiveSession(state).history.length > 0,
   );
   const tabs = useSelector((state: RootState) => state.tabs.tabs);
 

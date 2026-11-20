@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../../redux/slices/sessionSlice";
 import { act } from "@testing-library/react";
 import { ChatMessage } from "core";
 import { renderWithProviders } from "../../../util/test/render";
@@ -106,7 +107,7 @@ describe("Parallel Tool Calls - Streaming", () => {
     });
 
     const state = store.getState();
-    const history = state.session.history;
+    const history = selectActiveSession(state).history;
 
     // Should have only one assistant message after streaming
     const assistantMessages = history.filter(

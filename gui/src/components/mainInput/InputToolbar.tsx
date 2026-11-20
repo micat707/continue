@@ -1,3 +1,4 @@
+import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   AtSymbolIcon,
   LightBulbIcon as LightBulbIconOutline,
@@ -52,10 +53,12 @@ function InputToolbar(props: InputToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const defaultModel = useAppSelector(selectSelectedChatModel);
   const useActiveFile = useAppSelector(selectUseActiveFile);
-  const isInEdit = useAppSelector((store) => store.session.isInEdit);
+  const isInEdit = useAppSelector(
+    (store) => selectActiveSession(store).isInEdit,
+  );
   const codeToEdit = useAppSelector((store) => store.editModeState.codeToEdit);
   const hasReasoningEnabled = useAppSelector(
-    (store) => store.session.hasReasoningEnabled,
+    (store) => selectActiveSession(store).hasReasoningEnabled,
   );
   const isEnterDisabled =
     props.disabled || (isInEdit && codeToEdit.length === 0);
