@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DeepAgent LLM 日志查看器</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg2: #252526;
+    --bg3: #2d2d30;
+    --border: #3c3c3c;
+    --fg: #d4d4d4;
+    --fg-dim: #9d9d9d;
+    --accent: #4ea1ff;
+    --req: #4ec9b0;
+    --resp: #c586c0;
+    --dbg: #dcdcaa;
+    --raw: #e0a96d;
+    --err: #f48771;
+    --sys: #f48771;
+    --user: #4ea1ff;
+    --ai: #c586c0;
+    --tool: #dcdcaa;
+    --err: #f48771;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", Consolas, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+  }
+  header {
+    padding: 10px 14px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--fg-dim); font-size: 12px; }
+  header input[type=file] { color: var(--fg-dim); font-size: 12px; }
+  header button {
+    background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
+    padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  header button:hover { border-color: var(--accent); }
+  header .autolbl {
+    color: var(--fg-dim); font-size: 12px;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .toolbar {
+    padding: 8px 14px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .toolbar input[type=text], .toolbar select {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .toolbar input[type=text] { width: 240px; }
+  .toolbar label { color: var(--fg-dim); font-size: 12px; }
+  .layout { flex: 1; display: flex; min-height: 0; }
+  .sidebar {
+    width: 280px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 8px;
+    flex-shrink: 0;
+  }
+  .sidebar .sess {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    background: var(--bg3);
+  }
+  .sidebar .sess:hover { border-color: var(--accent); }
+  .sidebar .sess.active { border-color: var(--accent); background: #1b3a5c; }
+  .sidebar .sess .sid { font-weight: 600; color: var(--accent); word-break: break-all; }
+  .sidebar .sess .info { color: var(--fg-dim); font-size: 11px; margin-top: 3px; }
+  .sidebar .sess .nosid { color: var(--dbg); }
+  main { flex: 1; overflow-y: auto; padding: 12px; min-width: 0; }
+  .empty { color: var(--fg-dim); padding: 40px; text-align: center; }
+  .hint {
+    color: var(--fg-dim); font-size: 12px; padding: 6px 0 14px;
+    border-bottom: 1px dashed var(--border); margin-bottom: 12px;
+  }
+  .entry {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    background: var(--bg2);
+    overflow: hidden;
+  }
+  .entry > .head {
+    padding: 7px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    background: var(--bg3);
+    user-select: none;
+  }
+  .entry > .head .badge {
+    font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 4px;
+    color: #1e1e1e;
+  }
+  .badge.req { background: var(--req); }
+  .badge.resp { background: var(--resp); }
+  .badge.dbg { background: var(--dbg); }
+  .badge.raw { background: var(--raw); }
+  .badge.err { background: var(--err); }
+  .entry > .head .time { color: var(--fg-dim); font-size: 11px; }
+  .entry > .head .size { color: var(--fg-dim); font-size: 11px; margin-left: auto; }
+  .entry > .body { padding: 10px; display: none; }
+  .entry.open > .body { display: block; }
+  pre {
+    margin: 0; white-space: pre-wrap; word-break: break-word;
+    background: #111; border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px; max-height: 420px; overflow: auto; font-size: 12px;
+  }
+  .msg {
+    border: 1px solid var(--border); border-radius: 5px; margin-bottom: 8px;
+    background: var(--bg3); overflow: hidden;
+  }
+  .msg > .mhead {
+    padding: 6px 9px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    user-select: none;
+  }
+  .msg > .mhead .role {
+    font-weight: 700; font-size: 11px; padding: 1px 7px; border-radius: 4px; color: #1e1e1e;
+  }
+  .role.system { background: var(--sys); }
+  .role.user { background: var(--user); }
+  .role.assistant, .role.ai { background: var(--ai); }
+  .role.tool { background: var(--tool); }
+  .msg > .mhead .preview { color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .msg > .mbody { padding: 8px; display: none; border-top: 1px solid var(--border); }
+  .msg.open > .mbody { display: block; }
+  .toolcall {
+    border: 1px dashed var(--border); border-radius: 4px; padding: 6px 8px; margin-top: 6px;
+    background: #1a1a1a;
+  }
+  .toolcall .tc-name { color: var(--req); font-weight: 600; }
+  .section-title { font-size: 13px; font-weight: 600; margin: 4px 0 8px; color: var(--accent); }
+  .raw-toggle { color: var(--accent); cursor: pointer; font-size: 11px; text-decoration: underline; margin-top: 6px; display: inline-block; }
+  .tok-key { color: #9cdcfe; }
+  .tok-str { color: #ce9178; }
+  .tok-num { color: #b5cea8; }
+  .tok-bool { color: #569cd6; }
+  .tok-null { color: #808080; }
+  .chev { color: var(--fg-dim); }
+  .hidden-file { display: none; }
+  .hintmsg { color: var(--warn, #ffcf99); font-size: 11px; }
+  #histSelect { max-width: 300px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DeepAgent LLM 日志查看器</h1>
+  <span class="meta" id="fileMeta">未加载文件</span>
+  <input type="file" id="fileInput" accept=".log,.txt" class="hidden-file" />
+  <button id="pickBtn" title="选择日志文件。Chrome/Edge 下会记住文件句柄，刷新即可真正重读磁盘">选择文件</button>
+  <button id="refreshBtn" title="重新读取磁盘上的 llm.log 最新内容">刷新</button>
+  <span class="hintmsg" id="hintMsg"></span>
+  <label class="autolbl"><input type="checkbox" id="autoChk" /> 自动刷新(3s)</label>
+  <label class="autolbl">最近：</label>
+  <select id="histSelect" title="最近打开的文件（最多 5 个），选中即可重新打开"><option value="">（暂无历史）</option></select>
+  <button id="clearHistBtn" title="清除最近打开记录">清除</button>
+</header>
+<div class="toolbar">
+  <label>会话：</label>
+  <select id="sessSelect"><option value="">（加载文件后显示）</option></select>
+  <label>筛选区块：</label>
+  <select id="sectSelect">
+    <option value="">全部</option>
+    <option value="REQUEST-TO-MODEL">REQUEST-TO-MODEL</option>
+    <option value="RESPONSE-FROM-MODEL">RESPONSE-FROM-MODEL</option>
+    <option value="RAW-API-REQUEST">RAW-API-REQUEST</option>
+    <option value="RAW-API-RESPONSE">RAW-API-RESPONSE</option>
+    <option value="ERROR-FROM-MODEL">ERROR-FROM-MODEL</option>
+  </select>
+  <label>搜索：</label>
+  <input type="text" id="searchInput" placeholder="在选中会话内搜索文本…" />
+  <span class="meta" id="countMeta"></span>
+</div>
+<div class="layout">
+  <div class="sidebar" id="sidebar"></div>
+  <main id="main">
+    <div class="empty">用左上角「选择文件」加载 <code>&lt;工作区&gt;/tmp/llm.log</code>。<br/>
+    日志按会话（sid）分组，会话内按时间顺序平铺；点开 REQUEST 可逐条查看对话历史与工具结果。</div>
+  </main>
+</div>
+
+<script>
+const HEADER_RE = /==========\s+([^\s@]+)\s+@\s+([^\s]+)(?:\s+\[sid=([\w-]+)\])?\s+\(chars=(\d+),\s*~tokens≈(\d+)\)\s+==========/g;
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function syntaxHighlight(jsonStr) {
+  const esc = escapeHtml(jsonStr);
+  return esc.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    (m) => {
+      let cls = "tok-num";
+      if (/^"/.test(m)) cls = /:$/.test(m) ? "tok-key" : "tok-str";
+      else if (/true|false/.test(m)) cls = "tok-bool";
+      else if (/null/.test(m)) cls = "tok-null";
+      return '<span class="' + cls + '">' + m + "</span>";
+    }
+  );
+}
+// Normalize Continue message content (string | part[] | {content}) to text.
+function contentToText(c) {
+  if (c == null) return "";
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    return c
+      .map((p) => {
+        if (typeof p === "string") return p;
+        if (p && p.type === "text") return p.text || "";
+        if (p && p.type === "imageUrl") return "[image]";
+        if (p && typeof p.text === "string") return p.text;
+        return "";
+      })
+      .join("\n");
+  }
+  if (typeof c === "object") {
+    if (typeof c.content === "string") return c.content;
+    return JSON.stringify(c);
+  }
+  return String(c);
+}
+function roleBadge(role) {
+  const r = String(role || "").toLowerCase();
+  const cls = ["system", "user", "assistant", "ai", "tool"].includes(r) ? r : "tool";
+  return '<span class="role ' + cls + '">' + escapeHtml(role || "?") + "</span>";
+}
+function renderMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0)
+    return '<div class="meta" style="color:var(--fg-dim)">（无 messages）</div>';
+  let html = '<div class="section-title">messages (' + messages.length + ')</div>';
+  messages.forEach((m, i) => {
+    const role = m.role;
+    const text = contentToText(m.content);
+    const preview = text.replace(/\s+/g, " ").slice(0, 120);
+    const toolCalls = m.toolCalls;
+    const tcHtml = Array.isArray(toolCalls)
+      ? toolCalls
+          .map((tc) => {
+            const name = tc.function?.name || tc.name || "?";
+            const args =
+              tc.function?.arguments ||
+              (typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args || {}));
+            return (
+              '<div class="toolcall"><span class="tc-name">⚙ ' +
+              escapeHtml(name) +
+              "</span><pre>" +
+              escapeHtml(typeof args === "string" ? args : JSON.stringify(args, null, 2)) +
+              "</pre></div>"
+            );
+          })
+          .join("")
+      : "";
+    html +=
+      '<div class="msg">' +
+      '<div class="mhead" onclick="this.parentNode.classList.toggle(\'open\')">' +
+      roleBadge(role) +
+      "<span class=\"preview\">#" + i + " · " + escapeHtml(preview || "(空)") + "</span>" +
+      '<span class="chev">▸</span></div>' +
+      '<div class="mbody"><pre>' + escapeHtml(text || "(空)") + "</pre>" + tcHtml + "</div>" +
+      "</div>";
+  });
+  return html;
+}
+function renderEntryBody(entry) {
+  const sec = entry.section;
+  if (sec === "REQUEST-TO-MODEL") {
+    try {
+      const obj = JSON.parse(entry.body);
+      let html = '<div class="meta" style="color:var(--fg-dim);margin-bottom:6px">model: ' +
+        escapeHtml(obj.model || "?") + " · maxTokens: " + escapeHtml(String(obj.maxTokens ?? "?")) +
+        " · tools: " + (obj.tools ? obj.tools.length : 0) + "</div>";
+      html += '<details style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--accent)">查看工具 schema (' +
+        (obj.tools ? obj.tools.length : 0) + ")</summary><pre>" +
+        syntaxHighlight(JSON.stringify(obj.tools || [], null, 2)) + "</pre></details>";
+      html += renderMessages(obj.messages);
+      html += '<span class="raw-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">查看原始 JSON</span><pre style="display:none">' +
+        syntaxHighlight(entry.body) + "</pre>";
+      return html;
+    } catch (e) {
+      return "<pre>" + escapeHtml(entry.body) + "</pre>";
+    }
+  }
+  if (sec === "RESPONSE-FROM-MODEL") {
+    try {
+      const obj = JSON.parse(entry.body);
+      let html = "";
+      if (obj.toolCalls && obj.toolCalls.length) {
+        html += "<div class=\"section-title\">toolCalls (" + obj.toolCalls.length + ")</div>";
+        html += obj.toolCalls
+          .map((tc) => {
+            const name = tc.function?.name || tc.name || "?";
+            const args =
+              tc.function?.arguments ||
+              (typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args || {}));
+            return (
+              '<div class="toolcall"><span class="tc-name">⚙ ' + escapeHtml(name) +
+              "</span><pre>" + escapeHtml(typeof args === "string" ? args : JSON.stringify(args, null, 2)) +
+              "</pre></div>"
+            );
+          })
+          .join("");
+      }
+      if (obj.reasoning) {
+        html +=
+          '<details style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--accent)">思考内容 (reasoning) · ' +
+          obj.reasoning.length + " 字符</summary><pre>" +
+          escapeHtml(obj.reasoning) + "</pre></details>";
+      }
+      html += '<div class="section-title">content</div><pre>' + escapeHtml(contentToText(obj.content)) + "</pre>";
+      if (obj.rawResponse != null) {
+        html +=
+          '<details style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--accent)">原始返回 (raw，未加工) · ' +
+          obj.rawResponse.length + " 字符</summary><pre>" +
+          escapeHtml(obj.rawResponse) + "</pre></details>";
+      }
+      html += '<span class="raw-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">查看原始 JSON</span><pre style="display:none">' +
+        syntaxHighlight(entry.body) + "</pre>";
+      return html;
+    } catch (e) {
+      return "<pre>" + escapeHtml(entry.body) + "</pre>";
+    }
+  }
+  if (sec === "ERROR-FROM-MODEL") {
+    try {
+      const obj = JSON.parse(entry.body);
+      let html = '<div class="section-title">错误</div><pre>' +
+        escapeHtml(obj.error || obj.reason || "(未知原因)") + "</pre>";
+      if (obj.reason && obj.error) {
+        html += '<div class="meta">类型：' + escapeHtml(obj.reason) + "</div>";
+      }
+      if (obj.attempt) {
+        html += '<div class="meta">第几次尝试：' + escapeHtml(String(obj.attempt)) + "</div>";
+      }
+      if (obj.partialContent) {
+        html += '<div class="section-title">中断前已收到的内容</div><pre>' +
+          escapeHtml(contentToText(obj.partialContent)) + "</pre>";
+      }
+      if (obj.partialReasoning) {
+        html +=
+          '<details style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--accent)">中断前的思考内容 · ' +
+          obj.partialReasoning.length + " 字符</summary><pre>" +
+          escapeHtml(obj.partialReasoning) + "</pre></details>";
+      }
+      html += '<span class="raw-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'block\'?\'none\':\'block\'">查看原始 JSON</span><pre style="display:none">' +
+        syntaxHighlight(entry.body) + "</pre>";
+      return html;
+    } catch (e) {
+      return "<pre>" + escapeHtml(entry.body) + "</pre>";
+    }
+  }
+  if (sec === "RAW-API-REQUEST") {
+    return '<div class="section-title">原始请求体（打到 API 的线格式 JSON）</div>' + syntaxHighlight(entry.body);
+  }
+  if (sec === "RAW-API-RESPONSE") {
+    return '<div class="section-title">API 原始返回（含 SSE 帧）</div><pre>' + escapeHtml(entry.body) + "</pre>";
+  }
+  // RESPONSE-DEBUG and any other sections: raw text
+  return "<pre>" + escapeHtml(entry.body) + "</pre>";
+}
+function badgeClass(sec) {
+  if (sec.startsWith("REQUEST")) return "req";
+  if (sec.startsWith("RESPONSE-FROM")) return "resp";
+  if (sec.startsWith("RAW-API")) return "raw";
+  if (sec.startsWith("ERROR")) return "err";
+  return "dbg";
+}
+
+let SESSIONS = []; // [{sid, entries:[{section,ts,sid,chars,tokens,body}]}]
+let CURRENT = null;
+let lastFile = null;   // File snapshot from <input type=file> (fallback path)
+let lastHandle = null; // FileSystemFileHandle (Chromium) — enables a TRUE disk re-read
+let lastText = "";   // raw text of the last load (diagnostics for 0-entry logs)
+let autoTimer = null;
+
+function flashHint(msg) {
+  const el = document.getElementById("hintMsg");
+  if (!el) return;
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => (el.textContent = ""), 6000);
+}
+
+// ---------------------------------------------------------------------------
+// Recently opened files (max 5)
+// ---------------------------------------------------------------------------
+// A FileSystemFileHandle is structured-cloneable, so it can be persisted in
+// IndexedDB — after a page reload we can re-open the SAME file from disk (and
+// keep the "刷新 = real disk re-read" behaviour). localStorage holds only the
+// display metadata (name/size/time); the handles live in IndexedDB.
+const HIST_KEY = "llmLogRecentFiles";
+const HIST_CUR_KEY = "llmLogCurrentFile";
+const MAX_HISTORY = 5;
+let historyList = []; // [{id, name, size, ts}]
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open("llm-log-viewer", 1);
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      if (!db.objectStoreNames.contains("handles")) {
+        db.createObjectStore("handles");
+      }
+    };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+async function idbPut(id, handle) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readwrite");
+    tx.objectStore("handles").put(handle, id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbGet(id) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readonly");
+    const rq = tx.objectStore("handles").get(id);
+    rq.onsuccess = () => resolve(rq.result || null);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+async function idbDel(id) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readwrite");
+    tx.objectStore("handles").delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbClear() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("handles", "readwrite");
+    tx.objectStore("handles").clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function fmtSize(n) {
+  if (typeof n !== "number") return "?";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+function loadHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HIST_KEY) || "[]");
+    historyList = Array.isArray(raw) ? raw.slice(0, MAX_HISTORY) : [];
+  } catch {
+    historyList = [];
+  }
+}
+function saveHistory() {
+  try {
+    localStorage.setItem(HIST_KEY, JSON.stringify(historyList.slice(0, MAX_HISTORY)));
+  } catch {}
+}
+function renderHistory() {
+  const sel = document.getElementById("histSelect");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">（选择最近打开的文件）</option>';
+  if (!historyList.length) {
+    sel.innerHTML = '<option value="">（暂无历史）</option>';
+    return;
+  }
+  historyList.forEach((h) => {
+    const opt = document.createElement("option");
+    opt.value = h.id;
+    const when = new Date(h.ts).toLocaleString("zh-CN", { hour12: false });
+    opt.textContent = `${h.name} · ${fmtSize(h.size)} · ${when}`;
+    opt.title = h.name;
+    sel.appendChild(opt);
+  });
+  sel.value = "";
+}
+// Remember a file we just opened (most recent first, de-duplicated by name).
+async function rememberFile(handle, file) {
+  const rec = {
+    id: "h" + Date.now() + Math.random().toString(36).slice(2, 8),
+    name: file.name,
+    size: file.size,
+    ts: Date.now(),
+  };
+  try {
+    await idbPut(rec.id, handle);
+  } catch {
+    return; // handle not persistable — skip this entry entirely
+  }
+  // Same-name file replaces the old entry — drop its handle too, so the
+  // IndexedDB store doesn't grow without bound.
+  const stale = historyList.filter((h) => h.name !== rec.name);
+  for (const h of stale) {
+    try {
+      await idbDel(h.id);
+    } catch {}
+  }
+  historyList = [rec, ...stale].slice(0, MAX_HISTORY);
+  saveHistory();
+  renderHistory();
+}
+// Re-open a remembered file straight from disk.
+async function openRemembered(id) {
+  const rec = historyList.find((h) => h.id === id);
+  if (!rec) return;
+  let handle = null;
+  try {
+    handle = await idbGet(id);
+  } catch {}
+  if (!handle) {
+    flashHint("没有该文件的句柄（浏览器不支持或已失效），请重新选择文件。");
+    return;
+  }
+  try {
+    let perm = await handle.queryPermission({ mode: "read" });
+    if (perm !== "granted") {
+      // Must run inside a user gesture — the select's change event qualifies.
+      perm = await handle.requestPermission({ mode: "read" });
+    }
+    if (perm !== "granted") {
+      flashHint("未获得该文件的读取权限，请重新选择文件。");
+      return;
+    }
+    const file = await handle.getFile();
+    lastHandle = handle;
+    lastFile = null;
+    readAndRender(file, false);
+    // Most-recent-first ordering.
+    historyList = [rec, ...historyList.filter((h) => h.id !== id)];
+    saveHistory();
+    renderHistory();
+    try {
+      localStorage.setItem(HIST_CUR_KEY, rec.id);
+    } catch {}
+  } catch (e) {
+    flashHint("无法重新打开该文件：" + String(e));
+  }
+}
+
+// Pick the log file. On Chromium (File System Access API) we keep the
+// FileSystemFileHandle so "刷新" can re-read the file FROM DISK. An
+// <input type="file"> File object is only a snapshot taken at selection time
+// and never observes later writes — refreshing such a snapshot is a no-op.
+async function pickFile() {
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [
+          { description: "Log", accept: { "text/plain": [".log", ".txt"] } },
+        ],
+      });
+      lastHandle = handle;
+      lastFile = null;
+      const file = await handle.getFile();
+      readAndRender(file, false);
+      // Await so historyList[0] is already the new entry when we persist the
+      // "current file" pointer for the next page load.
+      await rememberFile(handle, file);
+      try {
+        localStorage.setItem(HIST_CUR_KEY, historyList[0]?.id || "");
+      } catch {}
+    } catch (e) {
+      // AbortError = the user dismissed the picker (nothing to do). Any other
+      // failure means the File System Access API is unusable here (e.g. some
+      // file:// restrictions) — fall back to the plain input so the button is
+      // never dead.
+      if (e && e.name === "AbortError") return;
+      lastHandle = null;
+      document.getElementById("fileInput").click();
+    }
+  } else {
+    document.getElementById("fileInput").click();
+  }
+}
+
+async function refreshFromDisk() {
+  if (lastHandle) {
+    try {
+      // Fresh File from disk — this is what makes 刷新 actually work.
+      const file = await lastHandle.getFile();
+      readAndRender(file, true);
+      return;
+    } catch {
+      lastHandle = null; // handle revoked / file gone
+    }
+  }
+  if (lastFile) {
+    readAndRender(lastFile, true);
+    flashHint(
+      "当前浏览器不支持真正的重读（需 Chrome/Edge），显示的是选择时的快照。请重新选择文件。",
+    );
+  }
+}
+
+function parse(text) {
+  const sessions = new Map();
+  let m;
+  HEADER_RE.lastIndex = 0;
+  const matches = [];
+  while ((m = HEADER_RE.exec(text)) !== null) matches.push(m);
+  for (let i = 0; i < matches.length; i++) {
+    const mm = matches[i];
+    const start = mm.index + mm[0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const body = text.slice(start, end).replace(/^\n+/, "").replace(/\s+$/, "");
+    // RESPONSE-DEBUG is diagnostic metadata only (path / finishReason / char
+    // counts) — not a model request or response, so skip it to reduce noise.
+    if (mm[1] === "RESPONSE-DEBUG") continue;
+    const sid = mm[3] || "__NOSID__";
+    if (!sessions.has(sid)) sessions.set(sid, []);
+    sessions.get(sid).push({
+      section: mm[1],
+      ts: mm[2],
+      sid: mm[3] || null,
+      chars: parseInt(mm[4], 10),
+      tokens: parseInt(mm[5], 10),
+      body,
+    });
+  }
+  // Sort sessions by first timestamp
+  const arr = [...sessions.entries()].map(([sid, entries]) => ({
+    sid,
+    entries: entries.sort((a, b) => (a.ts < b.ts ? -1 : 1)),
+  }));
+  arr.sort((a, b) => (a.entries[0].ts < b.entries[0].ts ? -1 : 1));
+  return arr;
+}
+
+function shortSid(sid) {
+  if (sid === "__NOSID__") return null;
+  return sid.length > 12 ? sid.slice(0, 12) + "…" : sid;
+}
+
+function renderSidebar() {
+  const sb = document.getElementById("sidebar");
+  const sel = document.getElementById("sessSelect");
+  sb.innerHTML = "";
+  sel.innerHTML = "";
+  if (SESSIONS.length === 0) {
+    sb.innerHTML = '<div class="hint">没有解析到任何会话条目。</div>';
+    if (!lastText.length) {
+      sb.innerHTML +=
+        '<div style="color:var(--fg-dim);font-size:11px;margin-bottom:4px">' +
+        "文件大小：<b>0 字符</b> —— 读到的文件是空的。常见原因：<br/>" +
+        "① 选错了文件；<br/>" +
+        "② 日志还没写入（日志路径为 <code>&lt;工作区&gt;/tmp/llm.log</code>）；<br/>" +
+        "③ 本轮对话尚未产生过模型请求。<br/>" +
+        "④ 浏览器只保留了选择文件那一刻的快照 —— 请点「刷新」（Chrome/Edge 会重读磁盘）。" +
+        "</div>";
+    } else {
+      sb.innerHTML +=
+        '<div style="color:var(--fg-dim);font-size:11px;margin-bottom:4px">' +
+        "文件大小：" + lastText.length +
+        " 字符，但没有匹配到区块头。期望的区块头格式：<br/>" +
+        "<code>========== SECTION @ 2026-01-01T00:00:00.000Z [sid=xxx] (chars=123, ~tokens≈35) ==========</code><br/>" +
+        "开头 400 字符预览：</div>" +
+        '<pre style="max-height:320px;font-size:11px">' +
+        escapeHtml(lastText.slice(0, 400)) + "</pre>";
+    }
+    return;
+  }
+  SESSIONS.forEach((s, idx) => {
+    const first = s.entries[0];
+    const last = s.entries[s.entries.length - 1];
+    const totalTokens = s.entries.reduce((a, e) => a + (e.tokens || 0), 0);
+    const div = document.createElement("div");
+    div.className = "sess" + (CURRENT === idx ? " active" : "");
+    const ss = shortSid(s.sid);
+    div.innerHTML =
+      '<div class="sid">' + (ss ? escapeHtml(ss) : '<span class="nosid">未分组（旧日志）</span>') + "</div>" +
+      '<div class="info">条数 ' + s.entries.length + " · ≈" + totalTokens + " tokens<br/>" +
+      first.ts.replace("T", " ").replace("Z", "") + " → " + last.ts.replace("T", " ").replace("Z", "") + "</div>";
+    div.onclick = () => selectSession(idx);
+    sb.appendChild(div);
+
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = (ss ? ss : "未分组") + " (" + s.entries.length + " 条)";
+    sel.appendChild(opt);
+  });
+}
+
+function applyFilters(entries) {
+  const sect = document.getElementById("sectSelect").value;
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+  return entries.filter((e) => {
+    if (sect && e.section !== sect) return false;
+    if (q && !((e.section + " " + e.body).toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function renderSession(idx) {
+  const main = document.getElementById("main");
+  if (idx == null || !SESSIONS[idx]) {
+    main.innerHTML = '<div class="empty">请选择一个会话。</div>';
+    return;
+  }
+  const s = SESSIONS[idx];
+  const filtered = applyFilters(s.entries);
+  document.getElementById("countMeta").textContent =
+    "显示 " + filtered.length + " / " + s.entries.length + " 条";
+  if (filtered.length === 0) {
+    main.innerHTML = '<div class="empty">当前筛选条件下没有条目。</div>';
+    return;
+  }
+  let html = '<div class="hint">会话 sid: <code>' + escapeHtml(s.sid === "__NOSID__" ? "(无)" : s.sid) +
+    "</code> · 共 " + s.entries.length + " 条记录，按时间顺序展示。点条目头展开/收起。</div>";
+  filtered.forEach((e, i) => {
+    const bc = badgeClass(e.section);
+    html +=
+      '<div class="entry">' +
+      '<div class="head" onclick="this.parentNode.classList.toggle(\'open\')">' +
+      '<span class="badge ' + bc + '">' + escapeHtml(e.section) + "</span>" +
+      '<span class="time">' + escapeHtml(e.ts.replace("T", " ").replace("Z", "")) + "</span>" +
+      '<span class="size">' + e.chars + " chars · ≈" + e.tokens + " tok</span>" +
+      "</div>" +
+      '<div class="body">' + renderEntryBody(e) + "</div>" +
+      "</div>";
+  });
+  main.innerHTML = html;
+}
+
+function selectSession(idx) {
+  CURRENT = idx;
+  renderSidebar();
+  renderSession(idx);
+  document.getElementById("sessSelect").value = String(idx);
+}
+
+function readAndRender(file, keepSelection) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result || "");
+    // Nothing new on disk since the last read — don't re-render (would collapse
+    // the user's expanded entries for no reason).
+    if (keepSelection && text === lastText) return;
+    lastText = text;
+    const prevSid = keepSelection && SESSIONS[CURRENT] ? SESSIONS[CURRENT].sid : null;
+    const prevScroll = document.getElementById("main").scrollTop;
+    SESSIONS = parse(text);
+    CURRENT = SESSIONS.findIndex((s) => s.sid === prevSid);
+    if (CURRENT < 0) CURRENT = SESSIONS.length ? 0 : null;
+    document.getElementById("fileMeta").textContent =
+      file.name + " · " + SESSIONS.length + " 个会话 · " +
+      SESSIONS.reduce((a, s) => a + s.entries.length, 0) + " 条记录";
+    renderSidebar();
+    renderSession(CURRENT);
+    document.getElementById("main").scrollTop = prevScroll;
+  };
+  reader.readAsText(file);
+}
+
+document.getElementById("pickBtn").addEventListener("click", pickFile);
+
+// Fallback path for browsers without the File System Access API: the input
+// yields a static snapshot, so refresh can only re-read that snapshot.
+document.getElementById("fileInput").addEventListener("change", (ev) => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  lastFile = f;
+  lastHandle = null;
+  readAndRender(f, false);
+});
+
+// Re-read the log from disk (Chromium: via the stored handle) — no re-pick.
+document.getElementById("refreshBtn").addEventListener("click", () => {
+  refreshFromDisk();
+});
+
+document.getElementById("autoChk").addEventListener("change", (ev) => {
+  if (ev.target.checked) {
+    autoTimer = setInterval(() => {
+      refreshFromDisk();
+    }, 3000);
+  } else {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
+});
+
+document.getElementById("sessSelect").addEventListener("change", (ev) => {
+  const v = ev.target.value;
+  if (v !== "") selectSession(parseInt(v, 10));
+});
+document.getElementById("sectSelect").addEventListener("change", () => renderSession(CURRENT));
+document.getElementById("searchInput").addEventListener("input", () => renderSession(CURRENT));
+
+// --- recently opened files ---
+document.getElementById("histSelect").addEventListener("change", (ev) => {
+  const id = ev.target.value;
+  if (id) openRemembered(id);
+});
+document.getElementById("clearHistBtn").addEventListener("click", async () => {
+  historyList = [];
+  saveHistory();
+  renderHistory();
+  try {
+    localStorage.removeItem(HIST_CUR_KEY);
+  } catch {}
+  try {
+    await idbClear();
+  } catch {}
+  flashHint("已清除最近打开记录。");
+});
+
+// Restore the last opened file on page load — only when the permission is
+// already granted (a fresh permission prompt would need a user gesture, which
+// a page load does not have).
+(async function restoreLastFile() {
+  loadHistory();
+  renderHistory();
+  let curId = "";
+  try {
+    curId = localStorage.getItem(HIST_CUR_KEY) || "";
+  } catch {}
+  if (!curId) return;
+  let handle = null;
+  try {
+    handle = await idbGet(curId);
+  } catch {}
+  if (!handle) return;
+  try {
+    const perm = await handle.queryPermission({ mode: "read" });
+    if (perm !== "granted") return; // ask on demand instead of prompting here
+    const file = await handle.getFile();
+    lastHandle = handle;
+    lastFile = null;
+    readAndRender(file, false);
+  } catch {}
+})();
+</script>
+</body>
+</html>
