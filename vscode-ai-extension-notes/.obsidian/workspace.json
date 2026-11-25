@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "09-构建与打包脚本速查.md",
+                "file": "12-Kiro的ACP工具与扩展方法清单.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "09-构建与打包脚本速查"
+              "title": "12-Kiro的ACP工具与扩展方法清单"
             }
           }
         ]
@@ -190,8 +190,9 @@
   },
   "active": "4bede899621a5b8a",
   "lastOpenFiles": [
-    "08-改造Continue为右侧锁死Chat面板.md",
     "09-构建与打包脚本速查.md",
+    "12-Kiro的ACP工具与扩展方法清单.md",
+    "08-改造Continue为右侧锁死Chat面板.md",
     "10-Kiro从Continue到自研的演变对照.md",
     "11-把Continue内置进fork发行版.md",
     "04-VSCode-Chat-Participant-API.md",

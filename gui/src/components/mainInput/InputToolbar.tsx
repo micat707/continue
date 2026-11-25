@@ -1,6 +1,7 @@
 import { selectActiveSession } from "../../redux/slices/sessionSlice";
 import {
   AtSymbolIcon,
+  DocumentTextIcon,
   LightBulbIcon as LightBulbIconOutline,
   PhotoIcon,
 } from "@heroicons/react/24/outline";
@@ -17,6 +18,10 @@ import { selectUseActiveFile } from "../../redux/selectors";
 import { selectSelectedChatModel } from "../../redux/slices/configSlice";
 import { setHasReasoningEnabled } from "../../redux/slices/sessionSlice";
 import { setReasoningSetting } from "../../redux/slices/uiSlice";
+import {
+  selectArtifacts,
+  togglePanel,
+} from "../../redux/slices/artifactsSlice";
 import { exitEdit } from "../../redux/thunks/edit";
 import { getMetaKeyLabel, isMetaEquivalentKeyPressed } from "../../util";
 import { ToolTip } from "../gui/Tooltip";
@@ -57,6 +62,9 @@ function InputToolbar(props: InputToolbarProps) {
     (store) => selectActiveSession(store).isInEdit,
   );
   const codeToEdit = useAppSelector((store) => store.editModeState.codeToEdit);
+  const artifactCount = useAppSelector(
+    (store) => selectArtifacts(store).items.length,
+  );
   const hasReasoningEnabled = useAppSelector(
     (store) => selectActiveSession(store).hasReasoningEnabled,
   );
@@ -97,6 +105,19 @@ function InputToolbar(props: InputToolbarProps) {
           <ToolTip place="top" content="Select Model">
             <HoverItem className="!p-0">
               <ModelSelect />
+            </HoverItem>
+          </ToolTip>
+          <ToolTip place="top" content="Artifacts">
+            <HoverItem
+              className="cursor-pointer"
+              onClick={() => dispatch(togglePanel())}
+            >
+              <DocumentTextIcon className="h-4 w-4" />
+              {artifactCount > 0 && (
+                <span className="ml-0.5 text-xs opacity-70">
+                  {artifactCount}
+                </span>
+              )}
             </HoverItem>
           </ToolTip>
           <div className="xs:flex text-description -mb-1 hidden items-center transition-colors duration-200">

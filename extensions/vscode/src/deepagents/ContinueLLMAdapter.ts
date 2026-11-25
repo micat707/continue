@@ -57,40 +57,43 @@ import { logLlmIo } from "./workspaceBackend";
 import { registerRawApiLogger } from "core/llm/llms/rawApiLogger";
 
 /**
- * Kiro gives each built-in tool TWO names: an internal `id` (what its agent
- * dispatches on) and a `displayName` (what the model sees). The vendored
- * descriptions are verbatim Kiro text and refer to tools by displayName
- * ("use glob tool", "use read tool", ...), so the model must be shown the
- * displayName for the description and the tool name to agree. Our whole agent
- * (langgraph dispatch, HITL, GUI cards) runs on the internal ids, so we map
- * id -> displayName only when sending tools to the model and displayName -> id
- * only when its tool calls come back. The mapping is from Kiro's own bundle
- * (`extension_inuse.js`), where e.g. `{ id: "file_search", displayName: "glob" }`.
+ * Kiro keeps two names per built-in tool: a stable internal `id` and a short
+ * `displayName`. The model-facing tool specification uses the id as its function
+ * name (see `.kiro/compare/kiro_tools.txt`: `read_file`, `fs_write`, ...), while
+ * the prose description refers to the displayName ("use glob or bash ls").
+ *
+ * Kiro's dispatcher accepts either spelling (`find(id) ?? find(displayName)`),
+ * so we send the raw ids to the model and only normalize short display names
+ * back to ids on the way in. That keeps our wire format identical to Kiro and
+ * still tolerates models that follow the prose instead of the function name.
  */
-const TOOL_ID_TO_DISPLAY: Record<string, string> = {
-  file_search: "glob",
-  grep_search: "grep",
-  read_file: "read",
-  fs_write: "write",
-  str_replace: "edit",
-  execute_pwsh: "bash",
+const TOOL_DISPLAY_TO_ID: Record<string, string> = {
+  glob: "file_search",
+  grep: "grep_search",
+  read: "read_file",
+  write: "fs_write",
+  edit: "str_replace",
+  bash: "execute_pwsh",
+  web_search: "remote_web_search",
 };
-const TOOL_DISPLAY_TO_ID: Record<string, string> = Object.fromEntries(
-  Object.entries(TOOL_ID_TO_DISPLAY).map(([id, display]) => [display, id]),
-);
 
 // The raw wire-level (provider-format) logger lives in core but the on-disk
-// writer (`logLlmIo`) is extension-only, so we bridge it once. NOTE: this is a
-// single global sink with signature (section, body) — it has no way to know
-// which adapter/session produced an entry, so it deliberately does NOT stamp a
-// session id. Per-session attribution lives in `logApiJson` below, which uses
-// this instance's own `sessionId` (see #currentSessionId removal: a module-level
-// "latest adapter wins" id previously mislabelled every raw entry).
+// writer (`logLlmIo`) is extension-only, so we bridge it once. The sink now
+// receives a `sessionId` argument threaded from BaseLLM.streamChat's
+// MessageOption down through this adapter, so RAW entries carry the SAME id as
+// this instance's logApiJson entries — no module-level "latest adapter wins"
+// guessing (that was removed because it mislabelled concurrent sessions).
 let rawApiLoggerRegistered = false;
 
 export interface ContinueLLMAdapterOptions {
   /** The Continue LLM instance that actually talks to the model. */
   llm: ILLM;
+  /**
+   * Owning chat session id, from DeepAgentLLM.wrapper.streamChat. Stamped on
+   * every llm.log entry (adapter-level AND wire-level RAW) so all logs for one
+   * conversation share a single id. Falls back to a random id if omitted.
+   */
+  sessionId?: string;
   /**
    * Optional dynamic context, evaluated on EVERY model call and appended to the
    * FIRST system message. Continue's `compileChatMessages` keeps only the
@@ -127,14 +130,43 @@ const MAX_MODEL_RETRIES = 1;
 export class ContinueLLMAdapter extends BaseChatModel {
   llm: ILLM;
 
-  /** Stable id for THIS chat session (one per DeepAgent panel instance). Written
-   *  into every llm.log header so the viewer can group entries by conversation. */
-  private readonly sessionId: string = randomUUID();
+  /** Stable id for THIS chat session (from wrapper.streamChat). Stamped on every
+   *  llm.log header — adapter-level AND wire-level RAW — so the viewer groups a
+   *  whole conversation under one id. Falls back to random if not provided. */
+  private readonly sessionId: string;
 
   private readonly systemContext?: () => string;
 
   /** Lazy OutputChannel for raw request/response debugging. */
   private static debugOut: vscode.OutputChannel | undefined;
+
+  /**
+   * Build marker: bump this stamp whenever you rebuild the extension, so the
+   * Extension Host Console shows unambiguously which source version is live.
+   * Prints to console.log (not the OutputChannel) so it appears alongside the
+   * stream errors users see in the Console tab.
+   */
+  private static readonly BUILD_STAMP =
+    "2026-11-24-v4-startoffsetfix+stacktrace";
+  private static logBuildMarker(
+    path: string,
+    isSpec: boolean,
+    model: string,
+  ): void {
+    console.log(
+      `[DeepAgentBuild] stamp=${ContinueLLMAdapter.BUILD_STAMP} path=${path} spec=${isSpec} model=${model}`,
+    );
+  }
+  private static isSpecPrompt(continueMessages: ChatMessage[]): boolean {
+    return continueMessages.some(
+      (m) =>
+        m.role === "system" &&
+        typeof m.content === "string" &&
+        (m.content.includes("SPEC WORKFLOW") ||
+          m.content.includes("Specification Workflow") ||
+          m.content.includes("Task Execution Orchestrator")),
+    );
+  }
 
   private static logDebug(...args: unknown[]): void {
     if (!ContinueLLMAdapter.debugOut) {
@@ -152,9 +184,12 @@ export class ContinueLLMAdapter extends BaseChatModel {
     super({});
     this.llm = fields.llm;
     this.systemContext = fields.systemContext;
+    this.sessionId = fields.sessionId ?? randomUUID();
     if (!rawApiLoggerRegistered) {
       rawApiLoggerRegistered = true;
-      registerRawApiLogger((section, body) => logLlmIo(section, body));
+      registerRawApiLogger((section: string, body: string, sid?: string) =>
+        logLlmIo(section, body, undefined, sid),
+      );
     }
   }
 
@@ -226,7 +261,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
         out.push({
           type: "function",
           function: {
-            name: TOOL_ID_TO_DISPLAY[c.function.name] ?? c.function.name,
+            name: c.function.name,
             description: c.function.description,
             parameters: c.function.parameters ?? {
               type: "object",
@@ -251,7 +286,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
       out.push({
         type: "function",
         function: {
-          name: TOOL_ID_TO_DISPLAY[c.name] ?? c.name,
+          name: c.name,
           description: c.description,
           parameters: parameters as Record<string, unknown>,
         },
@@ -600,11 +635,31 @@ export class ContinueLLMAdapter extends BaseChatModel {
             "。请重试；若复现，请检查该 provider 的 tool_calls 流式返回格式。",
         );
       }
+      // Native tool_call arguments must be complete JSON. A provider can cut
+      // the stream mid-arguments and still label it finish_reason "stop", so
+      // `assertNotTruncated` (which only checks text markers) misses it. That
+      // leaves a half-written JSON like `{"path":"...md"` being dispatched to
+      // the tool (e.g. fs_write with no `text`). Detect it here so it surfaces
+      // as a clear error the agent can retry instead of a silent bad write.
+      if (args !== "" && args !== "{}") {
+        try {
+          JSON.parse(args);
+        } catch {
+          throw new Error(
+            `工具 ${name} 的参数 JSON 不完整（疑似输出被截断：` +
+              `maxTokens 或流式中断）。` +
+              `收到的参数片段: ${args.slice(0, 300)}` +
+              "。请在 config.yaml 增大 completionOptions.maxTokens 后重试。",
+          );
+        }
+      }
+      // Normalize empty arguments to a valid empty object for the tool runtime.
+      if (args === "") tc.function!.arguments = "{}";
       return true;
     });
-    // The model called tools by their Kiro displayName (glob/grep/read/...);
-    // translate back to the internal ids the agent dispatches on. This is the
-    // exact inverse of the mapping applied in toContinueTools().
+    // Kiro dispatch accepts either the tool id or its short displayName. The
+    // model normally calls the id we sent, but descriptions mention names like
+    // glob/grep/read/bash, so normalize those to ids before LangGraph dispatch.
     for (const tc of kept) {
       const fn = tc.function;
       if (fn?.name) fn.name = TOOL_DISPLAY_TO_ID[fn.name] ?? fn.name;
@@ -677,7 +732,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
       continueMessages,
       signal,
       completionOptions,
-      {},
+      { precompiled: false, sessionId: this.sessionId },
     );
     let lastChunkAt = Date.now();
     const watchdog = setInterval(
@@ -719,6 +774,12 @@ export class ContinueLLMAdapter extends BaseChatModel {
     // support native function calling properly (GPT-4/Claude/well-configured
     // servers) simply use the native `tool_calls` as-is.
     const completionOptions = this.buildCompletionOptions(lcTools);
+
+    ContinueLLMAdapter.logBuildMarker(
+      "_generate",
+      ContinueLLMAdapter.isSpecPrompt(continueMessages),
+      String(this.llm.model ?? completionOptions.model ?? "?"),
+    );
 
     // ---- Debug: dump the exact JSON request sent to the model ----
     this.logApiJson("REQUEST-TO-MODEL", {
@@ -834,6 +895,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
           rawChunkCount,
           toolCalls: mergedCalls.length,
         });
+        console.log(
+          `[DeepAgentBuild] _generate result stamp=${ContinueLLMAdapter.BUILD_STAMP} contentChars=${content.length} toolCalls=${mergedCalls.length} finish=${finishReason ?? "none"}`,
+        );
 
         this.assertNotTruncated(
           content,
@@ -887,12 +951,20 @@ export class ContinueLLMAdapter extends BaseChatModel {
           reason: "generate-failed",
           attempt: attempt + 1,
           error: String(e),
+          stack: e instanceof Error ? e.stack : undefined,
           partialContent: content,
           partialReasoning: reasoning,
           rawChunkCount,
         });
+        const genErr = e instanceof Error ? e : new Error(String(e));
+        console.error(
+          `[DeepAgent] _generate attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed:`,
+          genErr.message,
+          "\nSTACK:",
+          genErr.stack,
+        );
         ContinueLLMAdapter.logDebug(
-          `[DeepAgent] _generate attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${String(e)}`,
+          `[DeepAgent] _generate attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${genErr.message}\n${genErr.stack ?? ""}`,
         );
       }
     }
@@ -921,6 +993,12 @@ export class ContinueLLMAdapter extends BaseChatModel {
     const signal = (options as { signal?: AbortSignal }).signal;
     const lcTools = (options as { tools?: unknown[] }).tools;
     const completionOptions = this.buildCompletionOptions(lcTools);
+
+    ContinueLLMAdapter.logBuildMarker(
+      "_stream",
+      ContinueLLMAdapter.isSpecPrompt(continueMessages),
+      String(this.llm.model ?? completionOptions.model ?? "?"),
+    );
 
     // ---- Debug: dump the exact JSON request sent to the model ----
     this.logApiJson("REQUEST-TO-MODEL", {
@@ -1080,6 +1158,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
           textChunkCount: streamedChunks,
           toolCalls: mergedCalls.length,
         });
+        console.log(
+          `[DeepAgentBuild] _stream result stamp=${ContinueLLMAdapter.BUILD_STAMP} contentChars=${content.length} toolCalls=${mergedCalls.length} finish=${finishReason ?? "none"}`,
+        );
 
         // Surface a hard max-token truncation explicitly instead of letting the
         // turn end with "no tool calls" (it would look like a mid-thinking stop).
@@ -1146,12 +1227,20 @@ export class ContinueLLMAdapter extends BaseChatModel {
           reason: "stream-failed",
           attempt: attempt + 1,
           error: String(e),
+          stack: e instanceof Error ? e.stack : undefined,
           partialContent: content,
           partialReasoning: reasoning,
           rawChunkCount,
         });
+        const streamErr = e instanceof Error ? e : new Error(String(e));
+        console.error(
+          `[DeepAgent] stream attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed:`,
+          streamErr.message,
+          "\nSTACK:",
+          streamErr.stack,
+        );
         ContinueLLMAdapter.logDebug(
-          `[DeepAgent] stream attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${String(e)}`,
+          `[DeepAgent] stream attempt ${attempt + 1}/${MAX_MODEL_RETRIES + 1} failed: ${streamErr.message}\n${streamErr.stack ?? ""}`,
         );
       }
     }

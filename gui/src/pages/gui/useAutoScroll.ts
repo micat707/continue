@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ChatHistoryItemWithMessageId } from "../../redux/slices/sessionSlice";
 
 function getNumUserMsgs(history: ChatHistoryItemWithMessageId[]) {
@@ -45,8 +45,13 @@ const getComposerOverlap = (elem: HTMLElement): number => {
 export const useAutoScroll = (
   ref: React.RefObject<HTMLDivElement>,
   history: ChatHistoryItemWithMessageId[],
+  isStreaming?: boolean,
 ) => {
   const numUserMsgs = useMemo(() => getNumUserMsgs(history), [history.length]);
+  // Keep the latest streaming flag reachable from the observer callbacks,
+  // which are installed once and must not be torn down on every chunk.
+  const isStreamingRef = useRef(isStreaming);
+  isStreamingRef.current = isStreaming;
 
   useEffect(() => {
     const elem = ref.current;
@@ -101,16 +106,25 @@ export const useAutoScroll = (
     elem.addEventListener("scroll", onScroll);
 
     const maybeFollow = (reason: string) => {
+      const streamingNow = !!isStreamingRef.current;
       const contentGrew = elem.scrollHeight > lastScrollHeight;
       const viewportShrank = elem.clientHeight < lastClientHeight;
-      if (contentGrew || viewportShrank) {
+      // During streaming, DOM text can grow inside a nested scroll container
+      // (e.g. a tool Result box) without changing this element's scrollHeight.
+      // Treat any mutation while streaming as growth so the newest line stays
+      // visible above the stop bar.
+      const grew = contentGrew || (streamingNow && reason === "mutate");
+      if (grew || viewportShrank) {
         // Viewport SHRINK (composer grows: stream bar / review card) re-pins so
         // the bottom stays visible; viewport GROW (turn end, reservation
         // released) must NOT re-pin to the absolute bottom — the browser keeps
         // scrollTop (content stays put) and the freed space appears below, so
         // the conversation never "drops". Pinning to bottom on a grow would yank
         // it down by the freed amount.
-        if (follow) {
+        // While streaming, always keep the tail visible even if a stray
+        // scroll event flipped `follow` off — that is exactly the case where
+        // new text lands under the sticky stop/composer bar.
+        if (follow || streamingNow) {
           // Explicit "instant" overrides any inherited scroll-behavior, and
           // guarantees the scroll event lands immediately (well inside the
           // programmatic window).

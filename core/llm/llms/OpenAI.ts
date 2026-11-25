@@ -15,6 +15,7 @@ import {
   ChatMessage,
   CompletionOptions,
   LLMOptions,
+  MessageOption,
   Tool,
 } from "../../index.js";
 import { renderChatMessage } from "../../util/messageContent.js";
@@ -523,7 +524,11 @@ class OpenAI extends BaseLLM {
     messages: ChatMessage[],
     signal: AbortSignal,
     options: CompletionOptions,
+    messageOptions?: MessageOption,
   ): AsyncGenerator<ChatMessage> {
+    // Owning chat session id, threaded from streamChat so wire-level RAW dumps
+    // share the same id as the adapter's per-session logApiJson entries.
+    const rawSessionId = messageOptions?.sessionId;
     // Legacy /completions is now opt-in only (`useLegacyCompletionsEndpoint ===
     // true`). It is no longer forced by `raw` (the apply/edit pipeline always
     // passes raw: true) nor by NON_CHAT_MODELS — both used to push every stream
@@ -554,7 +559,7 @@ class OpenAI extends BaseLLM {
     const wireBody = { ...body, ...this.extraBodyProperties() };
     // The exact JSON payload sent to the model API (temperature / stop / tools
     // in provider format / messages in API role format) — for agent tuning.
-    logRawApi("RAW-API-REQUEST", JSON.stringify(wireBody));
+    logRawApi("RAW-API-REQUEST", JSON.stringify(wireBody), rawSessionId);
 
     const response = await this.fetch(this._getEndpoint("chat/completions"), {
       method: "POST",
@@ -569,7 +574,7 @@ class OpenAI extends BaseLLM {
         return; // Aborted by user
       }
       const rawText = await response.text();
-      logRawApi("RAW-API-RESPONSE", rawText);
+      logRawApi("RAW-API-RESPONSE", rawText, rawSessionId);
       let data: any;
       try {
         data = JSON.parse(rawText);
@@ -590,7 +595,7 @@ class OpenAI extends BaseLLM {
       sseResponse = parseBranch;
       logBranch
         .text()
-        .then((t: string) => logRawApi("RAW-API-RESPONSE", t))
+        .then((t: string) => logRawApi("RAW-API-RESPONSE", t, rawSessionId))
         .catch(() => {});
     }
 

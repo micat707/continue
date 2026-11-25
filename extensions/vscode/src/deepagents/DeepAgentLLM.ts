@@ -28,7 +28,6 @@ import {
 } from "@langchain/core/messages";
 
 import { ContinueLLMAdapter } from "./ContinueLLMAdapter";
-import { createPruneFileContent } from "./filePruning";
 import {
   approvePath,
   buildWorkspaceContext,
@@ -36,17 +35,28 @@ import {
   describeRoots,
   inWorkspaceFolders,
   approveReadPath,
-  createWorkspaceBackend,
   getWorkspaceLayout,
   setActiveTurnAbort,
   isPathApproved,
   translateVirtualPathsInCommand,
   withApprovedPaths,
-  createBackgroundProcessTools,
   setExecuteRunId,
 } from "./workspaceBackend";
-import { createWebFetchTools } from "./webFetchTool";
-import { createWebSearchTools } from "./webSearchTool";
+import { createDeepAgentTools } from "./acpToolKit";
+import {
+  createKiroContextFileResolver,
+  kiroPathToReal,
+  KIRO_SUBAGENTS,
+  SPEC_ORCHESTRATOR_PROMPT,
+  SPEC_ORCHESTRATOR_TOOLS,
+} from "./kiroSubagents";
+import {
+  createSpecWorkflowMiddleware,
+  SpecWorkflowController,
+} from "./specWorkflow";
+import { pushArtifactToGui } from "./artifactBridge";
+import { createArtifact } from "./artifactStore";
+import { createSpecTaskResolver, setSpecPathResolver } from "./specTools";
 import * as path from "path";
 import {
   DEFAULT_PERMISSION_CONFIG,
@@ -67,6 +77,7 @@ import {
   formatToolInput,
   formatToolOutput,
   stripToolBlocks,
+  TOOL_PENDING_MARKER,
 } from "./toolFormat";
 
 /**
@@ -200,6 +211,9 @@ function buildSessionRuntime(
 ): SessionRuntime {
   const adapter = new ContinueLLMAdapter({
     llm: underlying,
+    // The owning chat session id. Threaded all the way to the wire-level RAW
+    // logger so every llm.log entry for this conversation shares one id.
+    sessionId,
     // Re-evaluated on every model call, so folders added via "Add Folder to
     // Workspace…" show up without rebuilding the agent.
     systemContext: () => buildWorkspaceContext(rootOverride),
@@ -214,6 +228,9 @@ function buildSessionRuntime(
   const approvedPaths = new Set<string>();
   // Files this session wrote/edited — private set keyed by the owning session.
   const sessionChangedFiles = getSessionChangedFilesSet(sessionId);
+  // Spec workflow is OFF by default. Only the model calling
+  // `start_spec_workflow` flips this flag for this session.
+  const specController = new SpecWorkflowController();
   // Read-only grants: approving a read-style tool (ls/read_file/grep…) unlocks
   // the approved subtree for READ tools only — write tools always re-prompt.
   const approvedReadPaths = new Set<string>();
@@ -393,15 +410,6 @@ function buildSessionRuntime(
 
   const agent = createDeepAgent({
     model: adapter,
-    // Kiro-style large-file pruning driven by the MAIN LLM: read_file's
-    // `explanation` becomes the pruning prompt's reasoning. The callback never
-    // throws, so a failed/irrelevant reply simply returns the full file.
-    pruneFileContent: createPruneFileContent(async (prompt, signal) => {
-      const response = await adapter.invoke([new HumanMessage(prompt)], {
-        signal,
-      });
-      return typeof response.content === "string" ? response.content : "";
-    }),
     systemPrompt:
       "You are a helpful coding assistant. Use the filesystem tools when needed.",
     // Factory runs on every agent turn, so workspace changes (including
@@ -415,17 +423,49 @@ function buildSessionRuntime(
       }),
     // Background process management tools (control_process / get_process_output /
     // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-    // web_search + web_fetch mirror Kiro's search-then-read web workflow.
-    tools: [
-      ...createBackgroundProcessTools(),
-      ...createWebFetchTools(),
-      ...createWebSearchTools(),
-    ],
+    // remote_web_search + web_fetch mirror Kiro's search-then-read web workflow.
+    tools: createDeepAgentTools({
+      surface: "ide",
+      sessionId,
+      rootOverride,
+      specController,
+      kiroExtraDeps: {
+        toRealPath: (p) => kiroPathToReal(p, rootOverride),
+        workspaceRoot: () =>
+          getWorkspaceLayout(rootOverride).mounts[0]?.realPath ?? process.cwd(),
+        sessionId,
+        pushArtifact: pushArtifactToGui,
+        artifactWriter: createArtifact,
+        symbolResolver: async (filePath, content) => {
+          const { getSymbolsForFile } = require("core/util/treeSitter");
+          const symbols = await getSymbolsForFile(filePath, content);
+          return symbols as any;
+        },
+      },
+    }),
     // MemorySaver keeps the thread state so a paused run can be resumed on the
     // same thread_id after the user's decision.
     checkpointer: new MemorySaver(),
     interruptOn,
+    // Kiro's invoke_sub_agent: expose the 5 preset agents and let contextFiles
+    // resolve against this session's workspace layout. spec-task-execution is
+    // specOnly and stays out of the normal "Available agents" description.
+    subagents: KIRO_SUBAGENTS,
+    contextFileResolver: createKiroContextFileResolver(rootOverride),
+    specTaskResolver: createSpecTaskResolver((p) =>
+      kiroPathToReal(p, rootOverride),
+    ),
+    // Default chat path runs no classifier. The model opts into the spec
+    // workflow via `start_spec_workflow`; only then does spec sub-intent
+    // classification + the orchestrator prompt/tool whitelist apply.
+    middleware: [
+      createSpecWorkflowMiddleware(specController, {
+        orchestratorPrompt: SPEC_ORCHESTRATOR_PROMPT,
+        orchestratorToolNames: SPEC_ORCHESTRATOR_TOOLS,
+      }),
+    ],
   });
+  setSpecPathResolver((p) => kiroPathToReal(p, rootOverride));
 
   const streamChat = async function* (
     messages: ChatMessage[],
@@ -476,15 +516,29 @@ function buildSessionRuntime(
 
     let run: any;
     try {
-      run = await agent.streamEvents(
-        { messages: lcMessages },
-        { version: "v3", configurable: { thread_id: threadId } },
+      run = await agent.streamEvents({ messages: lcMessages }, {
+        version: "v3",
+        configurable: { thread_id: threadId },
+        // Propagate the turn's abort signal into LangGraph so "Stop" actually
+        // cancels the agent run (and its in-flight LLM fetch). Previously the
+        // signal was only used to interrupt terminal commands, so the agent
+        // kept generating after the user pressed Stop.
+        signal: _signal,
+      } as any);
+      console.log(
+        `[DeepAgent] agent.streamEvents started | session=${sessionId} abortedAtStart=${_signal?.aborted ?? "no-signal"}`,
       );
     } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "[DeepAgent] agent run failed |",
+        err.message,
+        "\nSTACK:",
+        err.stack,
+      );
       yield {
         role: "assistant",
-        content:
-          "DeepAgent error: " + (e instanceof Error ? e.message : String(e)),
+        content: "DeepAgent error: " + err.message,
       };
       return;
     }
@@ -499,6 +553,10 @@ function buildSessionRuntime(
       const textProducer = (async () => {
         try {
           for await (const msg of run.messages ?? []) {
+            if (_signal?.aborted) {
+              console.log(`[DeepAgent] textProducer stops: signal aborted`);
+              break;
+            }
             try {
               // Reasoning arrives via the message's `.reasoning` projection
               // (ChatModelStream over reasoning-delta events — see
@@ -517,6 +575,7 @@ function buildSessionRuntime(
                 }
               })();
               for await (const token of msg.text ?? []) {
+                if (_signal?.aborted) break;
                 if (token) {
                   answerChars += token.length;
                   queue.push({ kind: "text", text: token });
@@ -528,13 +587,22 @@ function buildSessionRuntime(
             }
           }
         } catch (e) {
-          console.log(`[DeepAgent] messages stream failed | ${String(e)}`);
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(
+            `[DeepAgent] messages stream failed | ${err.message}`,
+            "\nSTACK:",
+            err.stack,
+          );
         }
       })();
 
       const toolProducer = (async () => {
         try {
           for await (const call of run.toolCalls ?? []) {
+            if (_signal?.aborted) {
+              console.log(`[DeepAgent] toolProducer stops: signal aborted`);
+              break;
+            }
             try {
               const name = call.name ?? "tool";
               const input = formatToolInput(await call.input);
@@ -588,6 +656,16 @@ function buildSessionRuntime(
                     JSON.stringify({ running: true, output: "", runId }),
                   ),
                 });
+              } else if (name === "user_input") {
+                // Kiro emits a pending toolCall when the question is asked and
+                // updates it in place on answer. Mirror that: push a pending
+                // block NOW (while call.output waits for the user) so the
+                // question appears in the chat immediately. The completed block
+                // pushed below replaces it (via pending dedup in the GUI).
+                queue.push({
+                  kind: "text",
+                  text: formatToolBlock(name, input, TOOL_PENDING_MARKER),
+                });
               }
               let output = "";
               try {
@@ -622,7 +700,12 @@ function buildSessionRuntime(
             }
           }
         } catch (e) {
-          console.log(`[DeepAgent] toolCalls stream failed | ${String(e)}`);
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(
+            `[DeepAgent] toolCalls stream failed | ${err.message}`,
+            "\nSTACK:",
+            err.stack,
+          );
         }
       })();
 
@@ -727,7 +810,12 @@ function buildSessionRuntime(
         `[DeepAgent] <<< chat turn done | chars=${answerChars} | tools=${toolCount}`,
       );
     } catch (e) {
-      console.log(`[DeepAgent] <<< chat turn interrupted | ${String(e)}`);
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        `[DeepAgent] <<< chat turn interrupted | ${err.message}`,
+        "\nSTACK:",
+        err.stack,
+      );
       queue.close();
       yield {
         role: "assistant",

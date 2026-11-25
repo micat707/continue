@@ -28,7 +28,12 @@ import { getExtensionUri } from "../util/vscode";
 import { VsCodeIde } from "../VsCodeIde";
 import { VsCodeWebviewProtocol } from "../webviewProtocol";
 import { resolveHitlDecision, setHitlProtocol } from "../deepagents/hitlBridge";
+import {
+  resolveUserInput,
+  setUserInputProtocol,
+} from "../deepagents/userInputTool";
 import { setExecuteProgressProtocol } from "../deepagents/executeProgressBridge";
+import { listArtifacts, deleteArtifact } from "../deepagents/artifactStore";
 import {
   getSessionChangedFiles,
   getSessionPermissionHandle,
@@ -136,6 +141,10 @@ export class VsCodeMessenger {
     // GUI to render approval cards without importing the protocol directly.
     setHitlProtocol(webviewProtocol);
 
+    // Wire the protocol into the user_input bridge so the `user_input` tool can
+    // render its inline question card and wait for the user's answer.
+    setUserInputProtocol(webviewProtocol);
+
     // Wire the same protocol into the execute-progress bridge so the DeepAgent
     // `execute` backend can stream live command output to the GUI's card.
     setExecuteProgressProtocol(webviewProtocol);
@@ -156,6 +165,21 @@ export class VsCodeMessenger {
       "deepAgentInterruptResponse",
       async ({ data: { requestId, decisions, sessionId } }) => {
         resolveHitlDecision(requestId, decisions, sessionId);
+      },
+    );
+
+    // Kiro-style `user_input`: the inline question card replies here with the
+    // selected option / free-form answer, unblocking the paused tool call.
+    this.onWebview(
+      "userInputResponse",
+      async ({
+        data: { requestId, answer, subOptions, skipped, sessionId },
+      }) => {
+        resolveUserInput(
+          requestId,
+          { answer: answer ?? "", subOptions, skipped },
+          sessionId,
+        );
       },
     );
 
@@ -598,6 +622,15 @@ export class VsCodeMessenger {
 
     this.onWebviewOrCore("fileExists", async (msg) => {
       return await ide.fileExists(msg.data.filepath);
+    });
+
+    // Kiro-aligned disk artifact store: GUI requests the session's artifacts
+    // (rebuild after webview reload) and dismisses individual artifacts.
+    this.onWebviewOrCore("artifactList", async (msg) => {
+      return await listArtifacts(msg.data.sessionId);
+    });
+    this.onWebviewOrCore("artifactDelete", async (msg) => {
+      await deleteArtifact(msg.data.id, msg.data.sessionId);
     });
 
     this.onWebviewOrCore("micatGetPaths", async () => {

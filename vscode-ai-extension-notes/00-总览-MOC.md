@@ -32,6 +32,7 @@ created: 2026-10-09
 | [[改造 Continue 为右侧锁死 Chat 面板]]        | fork 定制 · 复现记录 | 禁用原生 chat + Continue 面板移到右侧并锁死,升级后照此复现          |
 | [[构建与打包脚本速查]]                        | 工具 · 速查          | Continue(monorepo)与 VS Code fork 各自的编译/打包/启动命令          |
 | [[Kiro 从 Continue 到自研的演变对照]]         | 逆向对照             | 对比两版 kiro-agent 清单,看 Kiro 如何从基于 Continue 演变到完全自研 |
+| [[Kiro 的 ACP 工具与扩展方法清单]]            | 逆向对照 · 协议      | Kiro 三层工具路径、5 个 ClientCapabilityTool、120 个 `_kiro/*` 方法 |
 | [[把 Continue 内置进 fork 发行版]]            | 发布 · 方案          | 下载即带 Continue 的产物内置方案(可行性/机制/风险,探讨阶段)         |
 
 ---
@@ -71,6 +72,11 @@ flowchart TD
 
 > [!tip] 我在维护**自己的 VS Code fork**（禁用原生 chat / 把 Continue 面板锁死在右侧）
 > 直接看 [[改造 Continue 为右侧锁死 Chat 面板]]，它有逐文件的改动表、定位锚点和升级后的复现流程。
+
+> [!tip] 我想**逆向 Kiro 的工具/协议设计**（给自己的 agent 做参考）
+>
+> 1. [[Kiro 从 Continue 到自研的演变对照]]——先看宏观演变路径
+> 2. [[Kiro 的 ACP 工具与扩展方法清单]]——再看工具分三层、ClientCapabilityTool 的 `extMethod` 分发、120 个 `_kiro/*` 方法
 
 ---
 

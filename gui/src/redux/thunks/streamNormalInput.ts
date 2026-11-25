@@ -53,6 +53,22 @@ import { streamResponseAfterToolCall } from "./streamResponseAfterToolCall";
 let streamRequestSeq = 0;
 
 /**
+ * Module-level registry of the ACTUAL AbortController each running stream uses.
+ * Redux's `streamAborters[id]` can be replaced by `abortStream()` (it swaps in a
+ * fresh controller immediately) or be missing when a session was recreated, so
+ * Stop may signal a different object than the one the stream captured. Register
+ * the exact object here and let cancelStream abort it directly.
+ */
+const liveAborters = new Map<string, AbortController>();
+export function abortLiveStream(sessionId: string): boolean {
+  const c = liveAborters.get(sessionId);
+  if (!c) return false;
+  c.abort("user-stop");
+  liveAborters.delete(sessionId);
+  return true;
+}
+
+/**
  * Builds completion options with reasoning configuration based on session state and model capabilities.
  *
  * @param baseOptions - Base completion options to extend
@@ -280,9 +296,11 @@ export const streamNormalInput = createAsyncThunk<
     // untouched. `ensureSessionAborter` is idempotent across tool continuations.
     dispatch(ensureSessionAborter(owningSessionId));
     const ownerSession = selectSessionById(getState(), owningSessionId);
-    const streamAborter =
-      ownerSession.streamAborters?.[owningSessionId] ??
-      ownerSession.streamAborter;
+    const streamAborter: AbortController =
+      ownerSession?.streamAborters?.[owningSessionId] ??
+      ownerSession?.streamAborter ??
+      new AbortController();
+    liveAborters.set(owningSessionId, streamAborter);
     // Captured so the turn-end branch (below, outside this try) can print the
     // full reply when the model returns plain text with no tool call. Must be
     // declared OUTSIDE the try — the turn-end branch references it.
@@ -402,7 +420,7 @@ export const streamNormalInput = createAsyncThunk<
         // A switch-away aborts the controller captured at entry (same object),
         // so this check stops the background turn cleanly before any chunk is
         // dispatched.
-        if (streamAborter.signal.aborted) {
+        if (streamAborter?.signal?.aborted) {
           console.log(
             `[continue] ✕ LLM stream #${requestId} aborted (signal aborted)`,
           );
@@ -511,10 +529,13 @@ export const streamNormalInput = createAsyncThunk<
       }
     } catch (e) {
       // Was the request ever answered? `start` → now covers the whole wait.
+      const err = e instanceof Error ? e : new Error(String(e));
       console.error(
         "[continue] ✕ LLM request failed",
         `${Date.now() - start}ms`,
-        e instanceof Error ? e.message : e,
+        err.message,
+        "\nSTACK:",
+        err.stack,
       );
       const toolCallsToCancel = selectCurrentToolCalls(getState());
       if (
@@ -548,7 +569,7 @@ export const streamNormalInput = createAsyncThunk<
     // Tool call sequence:
     // 1. Mark generating tool calls as generated
     const state1 = getState();
-    if (streamAborter.signal.aborted) {
+    if (streamAborter?.signal?.aborted) {
       return;
     }
     const originalToolCalls = selectCurrentToolCalls(state1);
@@ -569,7 +590,7 @@ export const streamNormalInput = createAsyncThunk<
 
     // 2. Pre-process args to catch invalid args before checking policies
     const state2 = getState();
-    if (streamAborter.signal.aborted) {
+    if (streamAborter?.signal?.aborted) {
       return;
     }
     const generatedCalls2 = selectPendingToolCalls(state2);
@@ -577,7 +598,7 @@ export const streamNormalInput = createAsyncThunk<
 
     // 3. Security check: evaluate updated policies based on args
     const state3 = getState();
-    if (streamAborter.signal.aborted) {
+    if (streamAborter?.signal?.aborted) {
       return;
     }
     const generatedCalls3 = selectPendingToolCalls(state3);
@@ -615,7 +636,7 @@ export const streamNormalInput = createAsyncThunk<
       );
 
       if (builtInReadonlyAutoApproved.length > 0) {
-        if (streamAborter.signal.aborted) {
+        if (streamAborter?.signal?.aborted) {
           return;
         }
         await Promise.all(
@@ -639,7 +660,7 @@ export const streamNormalInput = createAsyncThunk<
       // auto stream cases increase thunk depth by 1 for debugging
       const state4 = getState();
       const generatedCalls4 = selectPendingToolCalls(state4);
-      if (streamAborter.signal.aborted) {
+      if (streamAborter?.signal?.aborted) {
         return;
       }
       if (generatedCalls4.length > 0) {

@@ -6,6 +6,7 @@ import { EditFile } from "./EditFile";
 import { FindAndReplaceDisplay } from "./FindAndReplace";
 import { ReadFile } from "./ReadFile";
 import { RunTerminalCommand } from "./RunTerminalCommand";
+import { UserInputCard } from "./UserInputCard";
 
 function FunctionSpecificToolCallDiv({
   toolCallState,
@@ -79,6 +80,8 @@ function FunctionSpecificToolCallDiv({
           toolCallId={toolCall.id}
         />
       );
+    case "user_input":
+      return <UserInputCard toolCallState={toolCallState} />;
     default:
       return null;
   }

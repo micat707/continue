@@ -647,12 +647,12 @@ function parse(text) {
     // RESPONSE-DEBUG is diagnostic metadata only (path / finishReason / char
     // counts) — not a model request or response, so skip it to reduce noise.
     if (mm[1] === "RESPONSE-DEBUG") continue;
-    // RAW-API-REQUEST / RAW-API-RESPONSE are logged at the wire layer, which
-    // has no chat-session id (see rawApiLogger.ts) — their headers carry no
-    // [sid=...]. They are emitted milliseconds after the adapter-level
-    // REQUEST-TO-MODEL of the SAME call, so attribute a sid-less entry to the
-    // most recently seen sid. `sidInferred` marks it as an approximation so the
-    // UI can make that explicit instead of mislabelling it a real session tag.
+    // RAW-API-REQUEST / RAW-API-RESPONSE are logged at the wire layer. New logs
+    // carry a real [sid=...] (threaded streamChat → rawApiLogger → logLlmIo), so
+    // mm[3] is used directly and no ≈sid is shown. Older logs (or non-DeepAgent
+    // paths) may still have no sid — for those, attribute to the most recently
+    // seen sid and set `sidInferred` so the UI shows ≈sid instead of presenting
+    // a guess as a real session tag.
     let sid = mm[3] || null;
     let sidInferred = false;
     if (!sid) {

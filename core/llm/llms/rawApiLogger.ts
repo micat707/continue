@@ -6,7 +6,15 @@
 // REQUEST-TO-MODEL / RESPONSE-FROM-MODEL dumps. When nothing is registered
 // (e.g. the GUI, which has no on-disk log) this is a no-op — calling it never
 // throws, so it is always safe to invoke from the hot request/response path.
-export type RawApiLogger = (section: string, body: string) => void;
+//
+// `sessionId` is threaded from BaseLLM.streamChat's MessageOption down to the
+// wire logger, so RAW entries carry the SAME chat session id as the adapter's
+// own logApiJson entries. It is optional for callers that have no session.
+export type RawApiLogger = (
+  section: string,
+  body: string,
+  sessionId?: string,
+) => void;
 
 let sink: RawApiLogger | null = null;
 
@@ -14,9 +22,13 @@ export function registerRawApiLogger(fn: RawApiLogger | null): void {
   sink = fn;
 }
 
-export function logRawApi(section: string, body: string): void {
+export function logRawApi(
+  section: string,
+  body: string,
+  sessionId?: string,
+): void {
   try {
-    sink?.(section, body);
+    sink?.(section, body, sessionId);
   } catch {
     /* logging must never break a model call */
   }

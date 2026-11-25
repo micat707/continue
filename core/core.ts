@@ -295,6 +295,9 @@ export class Core {
       // gets its own controller), so a Stop in one chat can never abort the
       // generator of another. The optional sessionId in the payload is routing
       // metadata for later stages; the messageId remains the authoritative key.
+      console.log(
+        `[core] abort received | messageId=${msg.messageId} known=${this.messageAbortControllers.has(msg.messageId)}`,
+      );
       this.abortById(msg.messageId);
     });
 

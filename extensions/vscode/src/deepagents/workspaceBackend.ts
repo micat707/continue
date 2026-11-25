@@ -854,9 +854,13 @@ const RAW_DATA_READ_TIMEOUT_MS = 10_000;
  * can then `grep`/`read_file` that file if it needs more. The note embedded in
  * the returned string tells the model where the full text went.
  */
-const MAX_MODEL_OUTPUT = 6 * 1024;
-const OUTPUT_HEAD = 2_500;
-const OUTPUT_TAIL = 2_500;
+// Aligned with Kiro's LargeOutputHandler (LF constants in its extension.js):
+//   CHAR_THRESHOLD = 3e4, HEAD_PREVIEW_SIZE = 500, TAIL_PREVIEW_SIZE = 500
+// i.e. only offload when output exceeds 30,000 chars, and keep a small 500-char
+// head + 500-char tail in the model-facing preview.
+const MAX_MODEL_OUTPUT = 3e4;
+const OUTPUT_HEAD = 500;
+const OUTPUT_TAIL = 500;
 function offloadIfLarge(
   output: string,
   cwd: string,
@@ -866,20 +870,28 @@ function offloadIfLarge(
   }
   const head = output.slice(0, OUTPUT_HEAD);
   const tail = output.slice(-OUTPUT_TAIL);
-  const kb = Math.round(output.length / 1024);
+  const omitted = Math.max(0, output.length - head.length - tail.length);
   let note: string;
   try {
     const dir = path.join(cwd, "tmp");
     fs.mkdirSync(dir, { recursive: true });
     const file = `offload-${Date.now()}.log`;
+    const absPath = path.join(dir, file).replace(/\\/g, "/");
     fs.writeFileSync(path.join(dir, file), output, "utf8");
     note =
-      `\n… [${kb} KB of output omitted; FULL TEXT saved to ` +
-      `tmp/${file} — grep/read it with the execute or read_file tools] …\n`;
+      `\n--- HEAD (first ${head.length.toLocaleString()} chars) ---\n${head}\n\n` +
+      `--- ${omitted.toLocaleString()} chars omitted ---\n\n` +
+      `--- TAIL (last ${tail.length.toLocaleString()} chars) ---\n${tail}\n--- END ---\n\n` +
+      `If more context is needed:\n` +
+      `1. Retry with narrower arguments so the result fits.\n` +
+      `2. The full output was saved to '${absPath}'. Inspect it with targeted shell commands (e.g. head -c 2000, tail -c 5000, grep -n 'pattern' | head -c 2000).`;
+    return { output: note, offloaded: true };
   } catch {
-    note = `\n… [${kb} KB of output omitted] …\n`;
+    note =
+      `\n[Output exceeded ${MAX_MODEL_OUTPUT.toLocaleString()} chars; ` +
+      `${omitted.toLocaleString()} chars omitted — no offload file could be written.]`;
+    return { output: `${head}${note}${tail}`, offloaded: true };
   }
-  return { output: `${head}${note}${tail}`, offloaded: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -926,7 +938,12 @@ export function logLlmIo(
     // the old silent catch hid where (or whether) the file was created.
     console.log(`[DeepAgent] llm.log -> ${p}`);
   } catch (e) {
-    console.log(`[DeepAgent] llm.log write FAILED: ${String(e)}`);
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error(
+      `[DeepAgent] llm.log write FAILED: ${err.message}`,
+      "\nSTACK:",
+      err.stack,
+    );
   }
 }
 
@@ -2211,26 +2228,28 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
         action: z
           .enum(["start", "stop"])
           .describe(
-            '"start" to launch a background process, "stop" to end one',
+            'The action to perform: "start" to create a new background process, "stop" to terminate an existing process',
           ),
         command: z
           .string()
           .optional()
           .nullable()
           .describe(
-            "The shell command to run as a background process (required for 'start')",
+            'The shell command to execute as a background process (required for "start" action)',
           ),
         cwd: z
           .string()
           .optional()
           .nullable()
-          .describe("Working directory for the process (optional for 'start')"),
+          .describe(
+            "Current working directory. The command will run in this directory. Defaults to workspace root if omitted.",
+          ),
         terminalId: z
           .string()
           .optional()
           .nullable()
           .describe(
-            "The terminalId of the process to stop (required for 'stop')",
+            'The unique identifier of the background process to terminate (required for "stop" action)',
           ),
       }),
       func: async (input: any) => {
@@ -2276,7 +2295,15 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
       schema: z.object({
         terminalId: z
           .string()
-          .describe("The terminalId returned by `control_process` 'start'"),
+          .describe(
+            "The unique identifier of the background process to read output from",
+          ),
+        lines: z
+          .number()
+          .optional()
+          .describe(
+            "Optional number of lines to limit output (if specified returns the X most recent lines; defaults to 100 lines)",
+          ),
       }),
       func: async (input: any) => {
         const r = getBackgroundProcessOutput(input.terminalId);
@@ -2286,8 +2313,17 @@ export function createBackgroundProcessTools(): DynamicStructuredTool[] {
             message: `No process with id ${input.terminalId}`,
           });
         }
-        // Cap returned output to the last 20k chars to protect the context.
-        const out = r.output.slice(-20000);
+        // Kiro: return the last N lines (default 100). Then cap to 20k chars
+        // to protect the context on very long individual lines.
+        const lineCount =
+          typeof input.lines === "number" && Number.isFinite(input.lines)
+            ? Math.max(0, Math.floor(input.lines))
+            : 100;
+        let out =
+          lineCount > 0
+            ? r.output.split("\n").slice(-lineCount).join("\n")
+            : "";
+        if (out.length > 20000) out = out.slice(-20000);
         return JSON.stringify({ running: r.running, output: out });
       },
     }),
@@ -2323,16 +2359,40 @@ class WorkspaceExecBackend extends FilesystemBackend {
   }
   async execute(
     command: string,
-    options?: { cwd?: string | null; timeout?: number | null },
+    options?: {
+      cwd?: string | null;
+      timeout?: number | null;
+      background?: boolean;
+    },
   ) {
     const mounts: WorkspaceMount[] = [
       { virtualPath: "/", name: "root", realPath: this.cwd },
     ];
     const cwd = resolveExecuteCwd(options?.cwd, mounts) ?? this.cwd;
+    const shellCommand = adaptCommandToShell(
+      translateVirtualPathsInCommand(command, mounts, true),
+    );
+
+    if (options?.background === true) {
+      const r = startBackgroundProcess(shellCommand, cwd);
+      if (r.error) {
+        return { output: r.error, exitCode: 1, truncated: false };
+      }
+      return {
+        output: JSON.stringify({
+          terminalId: r.terminalId,
+          isReused: r.isReused,
+          message: r.isReused
+            ? "Reused an existing background process with the same command and cwd."
+            : "Command started in the background. Use get_process_output with this terminalId to read its output.",
+        }),
+        exitCode: 0,
+        truncated: false,
+      };
+    }
+
     return runCommand(
-      adaptCommandToShell(
-        translateVirtualPathsInCommand(command, mounts, true),
-      ),
+      shellCommand,
       cwd,
       { real: [this.cwd], prefixes: ["/"] },
       options?.timeout ?? null,
@@ -2357,16 +2417,44 @@ class WorkspaceRootBackend extends CompositeBackend {
    */
   async execute(
     command: string,
-    options?: { cwd?: string | null; timeout?: number | null },
+    options?: {
+      cwd?: string | null;
+      timeout?: number | null;
+      background?: boolean;
+    },
   ) {
     const singleRoot =
       this.mounts.length === 1 && this.mounts[0].virtualPath === "/";
     const cwd =
       resolveExecuteCwd(options?.cwd, this.mounts) ?? this.mounts[0].realPath;
+    const shellCommand = adaptCommandToShell(
+      translateVirtualPathsInCommand(command, this.mounts, singleRoot),
+    );
+
+    // Kiro-style run_in_background: the flag is threaded from the tool all the
+    // way down to the execution layer, which decides sync vs background here
+    // (mirrors Kiro's terminal.runCommand(..., background)). Return the
+    // terminalId in the output so the model can poll via get_process_output.
+    if (options?.background === true) {
+      const r = startBackgroundProcess(shellCommand, cwd);
+      if (r.error) {
+        return { output: r.error, exitCode: 1, truncated: false };
+      }
+      return {
+        output: JSON.stringify({
+          terminalId: r.terminalId,
+          isReused: r.isReused,
+          message: r.isReused
+            ? "Reused an existing background process with the same command and cwd."
+            : "Command started in the background. Use get_process_output with this terminalId to read its output.",
+        }),
+        exitCode: 0,
+        truncated: false,
+      };
+    }
+
     return runCommand(
-      adaptCommandToShell(
-        translateVirtualPathsInCommand(command, this.mounts, singleRoot),
-      ),
+      shellCommand,
       cwd,
       {
         real: this.mounts.map((m) => m.realPath),

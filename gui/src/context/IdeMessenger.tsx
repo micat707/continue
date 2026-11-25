@@ -213,6 +213,9 @@ export class IdeMessenger implements IIdeMessenger {
     window.addEventListener("message", handler);
 
     const handleAbort = () => {
+      console.log(
+        `[IdeMessenger] abort → core | messageId=${messageId} type=${messageType}`,
+      );
       this.post("abort", undefined, messageId);
     };
     cancelToken?.addEventListener("abort", handleAbort);

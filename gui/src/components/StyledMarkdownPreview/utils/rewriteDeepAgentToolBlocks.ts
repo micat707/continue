@@ -5,6 +5,7 @@
  *   str_replace / edit_file -> ```editcard``` -> EditOutcomeCard
  *   read_file / read_files   -> ```readcard``` -> ReadOutcomeCard
  *   execute_pwsh / execute   -> ```commandcard``` -> CommandOutcomeCard
+ *   user_input               -> ```userinputcard``` -> UserInputOutcomeCard
  *
  * DeepAgentLLM injects tool activity as markdown wrapped in HTML comments so
  * it can be stripped from history on the next turn. remark-rehype drops HTML
@@ -18,6 +19,7 @@
 export const EDIT_CARD_LANGUAGE = "editcard";
 export const READ_CARD_LANGUAGE = "readcard";
 export const COMMAND_CARD_LANGUAGE = "commandcard";
+export const USER_INPUT_CARD_LANGUAGE = "userinputcard";
 
 const BLOCK_RE = /<!--deepagent-tool-->([\s\S]*?)<!--\/deepagent-tool-->/g;
 // Fallbacks for when streaming chunk boundaries split the HTML comment marker.
@@ -29,6 +31,53 @@ const READ_BLOCK_RE =
   /\*\*Tool: `(?:read_file|read_files)`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
 const COMMAND_BLOCK_RE =
   /\*\*Tool: `(?:execute|execute_pwsh|execute_bash)`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
+const USER_INPUT_BLOCK_RE =
+  /\*\*Tool: `user_input`\*\*[\s\S]*?\*\*Result\*\*\s*\n+(`{3,})[^\n]*\n[\s\S]*?\1/g;
+
+export interface UserInputCardPayload {
+  question: string;
+  answer: string;
+  /** True for the pending block emitted when the question is first asked. */
+  pending?: boolean;
+}
+
+/**
+ * Extract the asked question (from the JSON args fence) and the user's answer
+ * (from "Question ID: 0\nResponse: ..." in the Result fence) so the answered
+ * question can be shown as a Kiro-style tool-call summary in the chat flow.
+ *
+ * A pending block (TOOL_PENDING_MARKER) carries the question but no answer yet —
+ * it renders the same row with a "waiting" hint until the completed block (with
+ * the answer) arrives and the pending one is deduped away.
+ */
+function parseUserInputBlock(body: string): UserInputCardPayload | undefined {
+  if (!hasToolHeading(body, ["user_input"])) return undefined;
+
+  const questionRaw = /"(?:question)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(
+    body,
+  )?.[1];
+  const question =
+    questionRaw !== undefined ? unescapeJsonString(questionRaw) : "";
+  if (!question) return undefined;
+
+  const cleanQuestion = question
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const result = extractResultFence(body) ?? "";
+
+  // Pending: question asked, waiting for the user's answer.
+  if (result.trim() === TOOL_PENDING_MARKER) {
+    return { question: cleanQuestion, answer: "", pending: true };
+  }
+
+  // formatUserInputResult: "Question ID: 0\nResponse: <answer>"
+  const answerMatch = /(?:^|\n)Response:\s*([\s\S]*)$/.exec(result);
+  let answer = answerMatch?.[1]?.trim() ?? result.trim();
+  // Skip's canonical text is verbose; Kiro shows a short marker instead.
+  if (answer.includes("ready to move on to the next phase")) answer = "Skipped";
+  return { question: cleanQuestion, answer };
+}
 
 export interface EditCardPayload {
   filePath: string;
@@ -226,7 +275,11 @@ function parseExecuteBlock(body: string): CommandCardPayload | undefined {
 }
 
 function toFence(
-  payload: EditCardPayload | ReadCardPayload | CommandCardPayload,
+  payload:
+    | EditCardPayload
+    | ReadCardPayload
+    | CommandCardPayload
+    | UserInputCardPayload,
   language: string,
 ): string {
   // Single-line JSON: JSON.stringify escapes the newlines, so the fence body
@@ -328,10 +381,76 @@ function dropMatchedPendingCommandBlocks(source: string): string {
   return out;
 }
 
+/**
+ * Drop a pending `user_input` block once the completed block for the same
+ * question arrives. Mirrors Kiro's toolCallUpdate: the pending card stays while
+ * the user answers, then the completed one replaces it in place (no duplicate).
+ */
+function dropMatchedPendingUserInputBlocks(source: string): string {
+  if (
+    !source.includes(TOOL_PENDING_MARKER) ||
+    !source.includes("**Tool: `user_input`")
+  ) {
+    return source;
+  }
+  interface Block {
+    start: number;
+    end: number;
+    question: string;
+    pending: boolean;
+  }
+  const blocks: Block[] = [];
+  let m: RegExpExecArray | null;
+  BLOCK_RE.lastIndex = 0;
+  while ((m = BLOCK_RE.exec(source))) {
+    const whole = m[0];
+    const p = parseUserInputBlock(m[1] ?? whole);
+    if (p) {
+      blocks.push({
+        start: m.index,
+        end: m.index + whole.length,
+        question: p.question,
+        pending: Boolean(p.pending),
+      });
+    }
+  }
+  if (blocks.length === 0) return source;
+
+  const drop = new Set<number>();
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (!b.pending) continue;
+    // Drop pending if a completed block for the same question appears after it,
+    // or a newer pending supersedes it.
+    const completedAfter = blocks.some(
+      (o, j) => j > i && o.question === b.question && !o.pending,
+    );
+    const pendingAfter = blocks.some(
+      (o, j) => j > i && o.question === b.question && o.pending,
+    );
+    if (completedAfter || pendingAfter) drop.add(i);
+  }
+  if (drop.size === 0) return source;
+
+  let out = "";
+  let cursor = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (drop.has(i)) cursor = b.end;
+    else {
+      out += source.slice(cursor, b.end);
+      cursor = b.end;
+    }
+  }
+  out += source.slice(cursor);
+  return out;
+}
+
 export function rewriteDeepAgentToolBlocks(source: string): string {
   if (!source.includes("**Tool: `")) return source;
 
   source = dropMatchedPendingCommandBlocks(source);
+  source = dropMatchedPendingUserInputBlocks(source);
 
   // Preferred: exact comment-delimited block produced by formatToolBlock.
   let out = source.replace(BLOCK_RE, (whole, body: string) => {
@@ -341,6 +460,8 @@ export function rewriteDeepAgentToolBlocks(source: string): string {
     if (read) return toFence(read, READ_CARD_LANGUAGE);
     const cmd = parseExecuteBlock(body);
     if (cmd) return toFence(cmd, COMMAND_CARD_LANGUAGE);
+    const userInput = parseUserInputBlock(body);
+    if (userInput) return toFence(userInput, USER_INPUT_CARD_LANGUAGE);
     return whole;
   });
 
@@ -358,6 +479,10 @@ export function rewriteDeepAgentToolBlocks(source: string): string {
   out = out.replace(COMMAND_BLOCK_RE, (whole) => {
     const payload = parseExecuteBlock(whole);
     return payload ? toFence(payload, COMMAND_CARD_LANGUAGE) : whole;
+  });
+  out = out.replace(USER_INPUT_BLOCK_RE, (whole) => {
+    const payload = parseUserInputBlock(whole);
+    return payload ? toFence(payload, USER_INPUT_CARD_LANGUAGE) : whole;
   });
 
   return out;

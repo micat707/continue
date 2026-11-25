@@ -948,6 +948,11 @@ export abstract class BaseLLM implements ILLM {
     signal: AbortSignal,
     options: LLMFullCompletionOptions = {},
   ) {
+    console.log(
+      `[LLM_CALL_STACK][BaseLLM.chat] model=${
+        (this as any).title ?? (this as any).model ?? "?"
+      }\n${new Error().stack}`,
+    );
     let completion = "";
     for await (const message of this.streamChat(messages, signal, options)) {
       completion += renderChatMessage(message);
@@ -1284,6 +1289,7 @@ export abstract class BaseLLM implements ILLM {
             messages,
             signal,
             completionOptions,
+            messageOptions,
           )) {
             const result = this.processChatChunk(chunk, interaction);
             completion.push(...result.completion);
@@ -1444,6 +1450,7 @@ export abstract class BaseLLM implements ILLM {
     messages: ChatMessage[],
     signal: AbortSignal,
     options: CompletionOptions,
+    _messageOptions?: MessageOption,
   ): AsyncGenerator<ChatMessage> {
     if (!this.templateMessages) {
       throw new Error(

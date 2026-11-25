@@ -225,4 +225,33 @@ export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
     },
     void,
   ];
+  /** IDE → GUI: the model invoked `user_input`; render an inline question card
+   *  in that tool call's row and wait for the reply via `userInputResponse`. */
+  userInputRequested: [
+    {
+      requestId: string;
+      sessionId?: string;
+      question: string;
+      options: Array<{
+        title: string;
+        description?: string;
+        recommended?: boolean;
+        subOptions?: Array<{ title: string; description?: string }>;
+        subOptionsLabel?: string;
+      }>;
+      reason?: string;
+    },
+    void,
+  ];
+  /** GUI → IDE: the user's answer (or Skip) to an inline `user_input` question. */
+  userInputResponse: [
+    {
+      requestId: string;
+      sessionId?: string;
+      answer: string;
+      subOptions?: string[];
+      skipped?: boolean;
+    },
+    void,
+  ];
 };

@@ -24,8 +24,10 @@ import "./katex.css";
 import "./markdown.css";
 import EditOutcomeCard from "./EditOutcomeCard";
 import MermaidBlock from "./MermaidBlock";
+import ArtifactInline from "../ArtifactPanel/ArtifactInline";
 import ReadOutcomeCard from "./ReadOutcomeCard";
 import CommandOutcomeCard from "./CommandOutcomeCard";
+import UserInputOutcomeCard from "./UserInputOutcomeCard";
 import { rehypeHighlightPlugin } from "./rehypeHighlightPlugin";
 import { SecureImageComponent } from "./SecureImageComponent";
 import { StepContainerPreToolbar } from "./StepContainerPreToolbar";
@@ -39,6 +41,7 @@ import {
   COMMAND_CARD_LANGUAGE,
   EDIT_CARD_LANGUAGE,
   READ_CARD_LANGUAGE,
+  USER_INPUT_CARD_LANGUAGE,
   rewriteDeepAgentToolBlocks,
 } from "./utils/rewriteDeepAgentToolBlocks";
 
@@ -319,7 +322,8 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
             typeof className === "string" &&
             (className.includes(`language-${EDIT_CARD_LANGUAGE}`) ||
               className.includes(`language-${READ_CARD_LANGUAGE}`) ||
-              className.includes(`language-${COMMAND_CARD_LANGUAGE}`))
+              className.includes(`language-${COMMAND_CARD_LANGUAGE}`) ||
+              className.includes(`language-${USER_INPUT_CARD_LANGUAGE}`))
           ) {
             return <>{preProps.children}</>;
           }
@@ -397,6 +401,21 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
               />
             );
           }
+          if (
+            codeProps.className?.includes(
+              `language-${USER_INPUT_CARD_LANGUAGE}`,
+            )
+          ) {
+            return (
+              <UserInputOutcomeCard
+                payload={String(
+                  codeProps["data-codeblockcontent"] ??
+                    getCodeChildrenContent(codeProps.children) ??
+                    "",
+                )}
+              />
+            );
+          }
 
           const content = getCodeChildrenContent(codeProps.children);
 
@@ -425,6 +444,10 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
           return <code {...codeProps}>{codeProps.children}</code>;
         },
         img: ({ ...imgProps }) => {
+          const src = imgProps.src ?? "";
+          if (/^(kiro-artifact|micat-artifact):\/\//.test(src)) {
+            return <ArtifactInline src={src} alt={imgProps.alt} />;
+          }
           return (
             <SecureImageComponent
               src={imgProps.src}

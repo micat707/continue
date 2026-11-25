@@ -55,6 +55,12 @@ import { HumanMessage } from "@langchain/core/messages";
 import { ContinueLLMAdapter } from "./deepagents/ContinueLLMAdapter";
 import { DeepAgentChatPanel } from "./deepagents/DeepAgentChatPanel";
 import { wrapWithDeepAgent } from "./deepagents/DeepAgentLLM";
+import { setArtifactPusher } from "./deepagents/artifactBridge";
+import {
+  setArtifactStoreRoot,
+  startArtifactWatcher,
+  onArtifactsChanged,
+} from "./deepagents/artifactStore";
 import {
   createWorkspaceBackend,
   describeRoots,
@@ -104,7 +110,12 @@ async function setDeepAgentSetting(key: string, value: boolean | string) {
       .getConfiguration("continue")
       .update(key, value, vscode.ConfigurationTarget.Global);
   } catch (e) {
-    console.warn(`[DeepAgent] could not persist ${key}: ${String(e)}`);
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.warn(
+      `[DeepAgent] could not persist ${key}: ${err.message}`,
+      "\nSTACK:",
+      err.stack,
+    );
   }
 }
 
@@ -230,6 +241,22 @@ const getCommandsMap: (
   core,
   editDecorationManager,
 ) => {
+  // Kiro-aligned artifacts: register the GUI pusher so the create_artifact tool
+  // (running inside the wrapped-model singleton) can stream artifacts to the
+  // sidebar webview for the artifact panel + inline previews.
+  setArtifactPusher((payload) => {
+    void sidebar.webviewProtocol.send("artifactPush", payload);
+  });
+  // Kiro-aligned artifact store: disk-backed manifest under globalStorage.
+  setArtifactStoreRoot(extensionContext.globalStorageUri.fsPath);
+  startArtifactWatcher(extensionContext.subscriptions);
+  onArtifactsChanged((sessionId, artifacts) => {
+    void sidebar.webviewProtocol.send("artifactPushBulk", {
+      sessionId,
+      artifacts,
+    });
+  });
+
   // DeepAgent engine mode: wrap the selected chat model on every (re)load so the
   // main chat is driven by DeepAgent while the model selector stays unchanged.
   const daConfig = vscode.workspace.getConfiguration("continue");

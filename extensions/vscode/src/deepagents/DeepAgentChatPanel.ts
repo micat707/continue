@@ -21,7 +21,6 @@ import { createDeepAgent, type DeepAgent } from "deepagents";
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 
 import { ContinueLLMAdapter } from "./ContinueLLMAdapter";
-import { createPruneFileContent } from "./filePruning";
 import {
   approvePath,
   buildWorkspaceContext,
@@ -32,10 +31,21 @@ import {
   isPathApproved,
   pickRootOverride,
   withApprovedPaths,
-  createBackgroundProcessTools,
 } from "./workspaceBackend";
-import { createWebFetchTools } from "./webFetchTool";
-import { createWebSearchTools } from "./webSearchTool";
+import { createDeepAgentTools } from "./acpToolKit";
+import {
+  createKiroContextFileResolver,
+  kiroPathToReal,
+  KIRO_SUBAGENTS,
+  SPEC_ORCHESTRATOR_PROMPT,
+  SPEC_ORCHESTRATOR_TOOLS,
+} from "./kiroSubagents";
+import {
+  createSpecWorkflowMiddleware,
+  SpecWorkflowController,
+} from "./specWorkflow";
+import { createArtifact } from "./artifactStore";
+import { createSpecTaskResolver, setSpecPathResolver } from "./specTools";
 import {
   formatExecuteOutput,
   formatToolInput,
@@ -119,6 +129,8 @@ export class DeepAgentChatPanel {
   ) {
     this.panel = panel;
     this.rootOverride = rootOverride;
+    // Spec workflow is OFF by default; only start_spec_workflow activates it.
+    const specController = new SpecWorkflowController();
 
     const adapter = new ContinueLLMAdapter({
       llm,
@@ -210,13 +222,6 @@ export class DeepAgentChatPanel {
 
     this.agent = createDeepAgent({
       model: adapter,
-      // Kiro-style large-file pruning driven by the MAIN LLM (see DeepAgentLLM).
-      pruneFileContent: createPruneFileContent(async (prompt, signal) => {
-        const response = await adapter.invoke([new HumanMessage(prompt)], {
-          signal,
-        });
-        return typeof response.content === "string" ? response.content : "";
-      }),
       systemPrompt:
         "You are a helpful coding assistant. Use the filesystem tools when needed.",
       // Factory runs on every agent turn and reads the live workspace folders,
@@ -234,15 +239,49 @@ export class DeepAgentChatPanel {
         }),
       // Background process management tools (control_process / get_process_output /
       // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-      // web_search + web_fetch mirror Kiro's search-then-read web workflow.
-      tools: [
-        ...createBackgroundProcessTools(),
-        ...createWebFetchTools(),
-        ...createWebSearchTools(),
-      ],
+      // remote_web_search + web_fetch mirror Kiro's search-then-read web workflow.
+      tools: createDeepAgentTools({
+        surface: "webview",
+        sessionId: "deepagent-chat-panel",
+        rootOverride: this.rootOverride,
+        specController,
+        kiroExtraDeps: {
+          toRealPath: (p) => kiroPathToReal(p, this.rootOverride),
+          workspaceRoot: () =>
+            getWorkspaceLayout(this.rootOverride).mounts[0]?.realPath ??
+            process.cwd(),
+          pushArtifact: (payload) => {
+            this.panel.webview.postMessage({ type: "artifact", payload });
+          },
+          sessionId: "deepagent-chat-panel",
+          artifactWriter: createArtifact,
+          symbolResolver: async (filePath, content) => {
+            const { getSymbolsForFile } = require("core/util/treeSitter");
+            const symbols = await getSymbolsForFile(filePath, content);
+            return symbols as any;
+          },
+        },
+      }),
       checkpointer: new MemorySaver(),
       interruptOn,
+      // Kiro's invoke_sub_agent: expose the 5 preset agents and let contextFiles
+      // resolve against this panel's workspace layout. spec-task-execution is
+      // specOnly and stays out of the normal "Available agents" description.
+      subagents: KIRO_SUBAGENTS,
+      contextFileResolver: createKiroContextFileResolver(this.rootOverride),
+      specTaskResolver: createSpecTaskResolver((p) =>
+        kiroPathToReal(p, this.rootOverride),
+      ),
+      // Default chat path runs no classifier. Only start_spec_workflow gates
+      // entry into the spec workflow + sub-intent/orchestrator handling.
+      middleware: [
+        createSpecWorkflowMiddleware(specController, {
+          orchestratorPrompt: SPEC_ORCHESTRATOR_PROMPT,
+          orchestratorToolNames: SPEC_ORCHESTRATOR_TOOLS,
+        }),
+      ],
     });
+    setSpecPathResolver((p) => kiroPathToReal(p, this.rootOverride));
 
     this.panel.webview.onDidReceiveMessage((m: WebviewToExtension) =>
       this.onMessage(m),
@@ -1042,6 +1081,23 @@ export class DeepAgentChatPanel {
         case "interrupt":
           addInterruptCard(m.request);
           break;
+        case "artifact": {
+          const a = m.payload;
+          const card = addRow("assistant");
+          card.classList.add("artifact-card");
+          const link = document.createElement("a");
+          link.textContent = "Artifact: " + (a.title || a.id);
+          link.href = a.url || "";
+          link.title = a.filePath || "";
+          link.style.cursor = "pointer";
+          link.addEventListener("click", (e) => {
+            e.preventDefault();
+            vscode.postMessage({ type: "openFile", path: a.filePath });
+          });
+          card.appendChild(link);
+          scrollDown();
+          break;
+        }
       }
     });
   </script>

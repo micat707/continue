@@ -1,4 +1,5 @@
 import { History } from "../../components/History";
+import ArtifactPanel from "../../components/ArtifactPanel/ArtifactPanel";
 import { Chat } from "./Chat";
 
 export default function GUI() {
@@ -10,6 +11,7 @@ export default function GUI() {
       <main className="no-scrollbar relative flex min-h-0 min-w-0 flex-1 flex-col">
         <Chat />
       </main>
+      <ArtifactPanel />
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { IdeMessengerContext } from "../context/IdeMessenger";
 import { FromCoreProtocol } from "core/protocol";
 import { useAppDispatch, useAppSelector } from "../redux/hooks";
 import { setConfigLoading, setConfigResult } from "../redux/slices/configSlice";
+import { addArtifact, setArtifacts } from "../redux/slices/artifactsSlice";
 import { setLastNonEditSessionEmpty } from "../redux/slices/editState";
 import { updateIndexingStatus } from "../redux/slices/indexingSlice";
 import {
@@ -240,6 +241,37 @@ function ParallelListeners() {
       }),
     );
   });
+
+  // Kiro-aligned artifacts: create_artifact pushes here; store for the panel
+  // and inline previews (! [title](kiro-artifact://id)).
+  useWebviewListener("artifactPush", async (data) => {
+    dispatch(addArtifact(data));
+  });
+
+  // Disk-backed store: bulk replace after reload or watcher change.
+  useWebviewListener(
+    "artifactPushBulk",
+    async (data) => {
+      if (!data.sessionId || data.sessionId === sessionId) {
+        dispatch(setArtifacts(data.artifacts));
+      }
+    },
+    [sessionId],
+  );
+
+  // Rebuild artifacts from the disk store whenever the active session changes
+  // (e.g. webview reload / reload window) — Kiro's readManifest projection.
+  useEffect(() => {
+    if (!sessionId) return;
+    void ideMessenger
+      .request("artifactList", { sessionId })
+      .then((res) => {
+        if (res.status === "success" && Array.isArray(res.content)) {
+          dispatch(setArtifacts(res.content));
+        }
+      })
+      .catch(() => {});
+  }, [sessionId, ideMessenger, dispatch]);
 
   useWebviewListener("indexing/statusUpdate", async (data) => {
     dispatch(updateIndexingStatus(data));

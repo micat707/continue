@@ -30,9 +30,15 @@ export function setExecuteProgressProtocol(p: VsCodeWebviewProtocol): void {
 export function postExecuteProgress(runId: string, chunk: string): void {
   void protocol
     ?.request("deepagentExecuteProgress", { runId, chunk })
-    .catch((e) =>
-      console.log("[executeProgressBridge] send failed |", String(e)),
-    );
+    .catch((e) => {
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "[executeProgressBridge] send failed |",
+        err.message,
+        "\nSTACK:",
+        err.stack,
+      );
+    });
 }
 
 /** Signal that `runId` finished; the card flips to its final (green/red) state. */
@@ -42,7 +48,13 @@ export function postExecuteProgressDone(
 ): void {
   void protocol
     ?.request("deepagentExecuteProgress", { runId, done: true, exitCode })
-    .catch((e) =>
-      console.log("[executeProgressBridge] send failed |", String(e)),
-    );
+    .catch((e) => {
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "[executeProgressBridge] done send failed |",
+        err.message,
+        "\nSTACK:",
+        err.stack,
+      );
+    });
 }

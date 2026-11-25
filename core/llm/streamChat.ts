@@ -85,7 +85,7 @@ export async function* llmStreamChat(
             url,
             {
               ...init,
-              signal: abortController.signal,
+              signal: abortController?.signal,
             },
             model.requestOptions,
           ),
@@ -94,7 +94,7 @@ export async function* llmStreamChat(
       });
       let next = await gen.next();
       while (!next.done) {
-        if (abortController.signal.aborted) {
+        if (abortController?.signal?.aborted) {
           next = await gen.return(errorPromptLog);
           break;
         }
@@ -123,7 +123,7 @@ export async function* llmStreamChat(
       );
       const gen = model.streamChat(
         messages,
-        abortController.signal,
+        abortController?.signal,
         completionOptions,
         messageOptions,
       );
@@ -133,7 +133,7 @@ export async function* llmStreamChat(
         next.done ? "(done, no chunks)" : "",
       );
       while (!next.done) {
-        if (abortController.signal.aborted) {
+        if (abortController?.signal?.aborted) {
           console.log("[continue][core] ✕ model.streamChat aborted");
           next = await gen.return(errorPromptLog);
           break;
@@ -154,8 +154,16 @@ export async function* llmStreamChat(
 
       return next.value;
     }
-  } catch (error) {
-    // Moved error handling that was here to GUI, keeping try/catch for clean diff
+  } catch (error: any) {
+    // Temporary: print the real stack to the Extension Host Console. The
+    // console-encoder strips stacks from the GUI-side log, so this is the only
+    // place we can see where `reading 'filter'` actually originates.
+    console.error(
+      "[streamChat] ERROR:",
+      error?.message,
+      "\nSTACK:",
+      error?.stack,
+    );
     throw error;
   }
 }

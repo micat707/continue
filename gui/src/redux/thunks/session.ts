@@ -252,6 +252,11 @@ export const saveCurrentSession = createAsyncThunk<
 
         if (assistantResponse && generateTitle) {
           try {
+            console.log(
+              `[AUTO_TITLE_STACK][GUI] chatDescriber/describe session=${
+                session.id
+              }\n${new Error().stack}`,
+            );
             const result = await extra.ideMessenger.request(
               "chatDescriber/describe",
               {

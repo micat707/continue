@@ -85,8 +85,14 @@ export function requestHitlDecision(
     .catch((e) => {
       const p = pending.get(requestId);
       pending.delete(requestId);
-      console.log("[hitlBridge] interrupt send failed |", String(e));
-      p?.reject(e instanceof Error ? e : new Error(String(e)));
+      const err = e instanceof Error ? e : new Error(String(e));
+      console.error(
+        "[hitlBridge] interrupt send failed |",
+        err.message,
+        "\nSTACK:",
+        err.stack,
+      );
+      p?.reject(err);
     });
   return promise;
 }

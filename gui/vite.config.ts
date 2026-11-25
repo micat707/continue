@@ -23,6 +23,10 @@ export default defineConfig({
     },
   },
   server: {
+    // Bind IPv4 as well: on Windows, `localhost` resolves to both ::1 and
+    // 127.0.0.1, but Electron/Chromium may pick IPv4. Vite's default (`::1`
+    // only) then yields net::ERR_FAILED in the VS Code webview.
+    host: "127.0.0.1",
     cors: {
       origin: "*",
       methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],

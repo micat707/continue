@@ -42,6 +42,24 @@ export type ToIdeFromWebviewOrCoreProtocol = {
   saveFile: [{ filepath: string }, void];
   fileExists: [{ filepath: string }, boolean];
   readFile: [{ filepath: string }, string];
+  // Kiro-aligned artifact store (disk-backed, per-session manifest).
+  /** List artifacts for a session; rebuilds GUI state after webview reload. */
+  artifactList: [
+    { sessionId?: string },
+    Array<{
+      id: string;
+      title: string;
+      kind: string;
+      content: string;
+      filePath: string;
+      format?: string;
+      url: string;
+      sessionId?: string;
+      createdAt: string;
+    }>,
+  ];
+  /** Dismiss (delete) an artifact from the store. */
+  artifactDelete: [{ id: string; sessionId?: string }, void];
   // MicatCode: the GUI (webview) has no Node access, so the extension host
   // resolves the environment for us (Kiro-style context blocks).
   micatGetPaths: [

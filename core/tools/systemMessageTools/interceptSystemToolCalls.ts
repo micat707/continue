@@ -23,9 +23,13 @@ import {
 */
 export async function* interceptSystemToolCalls(
   messageGenerator: AsyncGenerator<ChatMessage[], PromptLog | undefined>,
-  abortController: AbortController,
+  abortController: AbortController | undefined,
   systemToolFramework: SystemMessageToolsFramework,
 ): AsyncGenerator<ChatMessage[], PromptLog | undefined> {
+  // Defensive: callers (GUI thunk / in-process core) can pass an undefined
+  // controller when a session's aborter was cleaned up between turns. Never
+  // let that crash the stream with `reading 'aborted'`.
+  const signal = abortController?.signal;
   let buffer = "";
   let parseState: ToolCallParseState | undefined;
 
@@ -46,7 +50,7 @@ export async function* interceptSystemToolCalls(
       return result.value;
     } else {
       for await (const message of result.value) {
-        if (abortController.signal.aborted) {
+        if (signal?.aborted) {
           break;
         }
         // Skip non-assistant messages or messages with native tool calls

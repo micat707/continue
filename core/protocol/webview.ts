@@ -57,4 +57,38 @@ export type ToWebviewFromIdeOrCoreProtocol = {
     },
     void,
   ];
+  // Kiro-aligned artifacts: pushed by create_artifact so the GUI can show the
+  // artifact panel (list + full-screen viewer) and inline previews.
+  artifactPush: [
+    {
+      id: string;
+      title: string;
+      kind: string;
+      content: string;
+      filePath: string;
+      format?: string;
+      url: string;
+      sessionId?: string;
+      createdAt: string;
+    },
+    void,
+  ];
+  /** Bulk push after reload / watcher change: replace all artifacts for a session. */
+  artifactPushBulk: [
+    {
+      sessionId?: string;
+      artifacts: Array<{
+        id: string;
+        title: string;
+        kind: string;
+        content: string;
+        filePath: string;
+        format?: string;
+        url: string;
+        sessionId?: string;
+        createdAt: string;
+      }>;
+    },
+    void,
+  ];
 };

@@ -1,5 +1,5 @@
 /**
- * Kiro-aligned `web_search` tool.
+ * Kiro-aligned `remote_web_search` tool (display name in prose: web_search).
  *
  * Kiro's flow is "search first, then web_fetch to read a specific result", so
  * this tool's description points at `web_fetch`. Two backends:
@@ -7,6 +7,10 @@
  *   - Bing HTML scraping (free, zero-config fallback, mirrors Kiro's no-key UX)
  * If the Tavily key is absent or Tavily fails, we transparently fall back to
  * Bing so the tool never hard-fails just because of missing configuration.
+ *
+ * The tool schema exposes `query` only — matching Kiro, where `remote_web_search`
+ * is a remote MCP tool whose server owns the result count / raw-content /
+ * timeout policy. Those knobs are internal constants here, not model inputs.
  *
  * Self-contained: global `fetch` + `jsdom` (already a dependency of the
  * extension), no new npm packages.
@@ -21,8 +25,17 @@ const TAVILY_API_URL = "https://api.tavily.com/search";
 const BING_SEARCH_URL = "https://www.bing.com/search";
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_RESULTS = 5;
+/**
+ * Retrieval tuning lives in the implementation, NOT in the tool schema.
+ *
+ * Kiro's `remote_web_search` is a remote MCP tool whose server owns the
+ * result-count / raw-content / timeout policy — the model only ever supplies
+ * `query`, and the client forwards `input` verbatim into `tools/call`. These
+ * constants are our equivalent of that server-side policy.
+ */
+const TIMEOUT_MS = 30_000;
+const MAX_RESULTS = 5;
+const INCLUDE_RAW_CONTENT = false;
 const SNIPPET_CHARS = 300;
 const ANSWER_CHARS = 2000;
 
@@ -129,7 +142,7 @@ async function bingSearch(
 
 async function tavilySearch(
   apiKey: string,
-  input: { query: string; maxResults?: number; includeRawContent?: boolean },
+  query: string,
   signal: AbortSignal,
 ): Promise<{ answer?: string; results: SearchResult[] }> {
   const resp = await fetch(TAVILY_API_URL, {
@@ -137,10 +150,10 @@ async function tavilySearch(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       api_key: apiKey,
-      query: input.query,
-      max_results: input.maxResults ?? DEFAULT_MAX_RESULTS,
+      query,
+      max_results: MAX_RESULTS,
       include_answer: true,
-      include_raw_content: input.includeRawContent ?? false,
+      include_raw_content: INCLUDE_RAW_CONTENT,
       search_depth: "advanced",
     }),
     signal,
@@ -159,7 +172,7 @@ async function tavilySearch(
 export function createWebSearchTools(): DynamicStructuredTool[] {
   return [
     new DynamicStructuredTool({
-      name: "web_search",
+      name: "remote_web_search",
       description: [
         "    WebSearch looks up information that is outside the model's training data or cannot be reliably inferred from the current codebase/context.",
         "    Tool perform basic compliance wrt content licensing and restriction.",
@@ -233,37 +246,17 @@ export function createWebSearchTools(): DynamicStructuredTool[] {
         "",
       ].join("\n"),
       schema: z.object({
-        query: z.string().min(1).describe("The search query."),
-        maxResults: z
-          .number()
-          .int()
-          .min(1)
-          .max(10)
-          .default(DEFAULT_MAX_RESULTS)
-          .describe("Maximum number of results (1-10, default 5)."),
-        includeRawContent: z
-          .boolean()
-          .default(false)
+        // Kiro's schema exposes `query` only — the result count / raw-content /
+        // timeout policy is server-side, so the model never decides them.
+        query: z
+          .string()
           .describe(
-            "Include raw page content in results (uses more tokens, Tavily only).",
+            "The search query to execute. Must be 200 characters or less.",
           ),
-        timeout: z
-          .number()
-          .int()
-          .min(1000)
-          .default(DEFAULT_TIMEOUT_MS)
-          .describe("Request timeout in milliseconds (default 30000)."),
       }),
-      func: async (input: {
-        query: string;
-        maxResults?: number;
-        includeRawContent?: boolean;
-        timeout?: number;
-      }) => {
-        const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS;
-        const maxResults = input.maxResults ?? DEFAULT_MAX_RESULTS;
+      func: async (input: { query: string }) => {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
         const key = tavilyApiKey();
 
         try {
@@ -272,7 +265,7 @@ export function createWebSearchTools(): DynamicStructuredTool[] {
             try {
               const { answer, results } = await tavilySearch(
                 key,
-                input,
+                input.query,
                 controller.signal,
               );
               if (results.length > 0)
@@ -284,14 +277,14 @@ export function createWebSearchTools(): DynamicStructuredTool[] {
           // Free fallback: Bing HTML scraping. Works with no configuration.
           const results = await bingSearch(
             input.query,
-            maxResults,
+            MAX_RESULTS,
             controller.signal,
           );
           return formatResults(input.query, undefined, results);
         } catch (e) {
           const err = e as Error;
           if (err.name === "AbortError") {
-            return `[Web search failed] Request timed out after ${timeout}ms.`;
+            return `[Web search failed] Request timed out after ${TIMEOUT_MS}ms.`;
           }
           return `[Web search failed] ${err.message}`;
         } finally {
