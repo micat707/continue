@@ -7,6 +7,7 @@ import {
   EditIcon,
   FileIcon,
 } from "../../pages/gui/ToolCallDiv/OutcomeIcons";
+import { UnifiedDiffView } from "./UnifiedDiffView";
 
 interface EditOutcomeCardProps {
   /** JSON produced by rewriteDeepAgentToolBlocks. */
@@ -54,7 +55,6 @@ export function EditOutcomeCard({ payload }: EditOutcomeCardProps) {
   const diffStart = result.indexOf("--- a/");
   const diff =
     diffStart >= 0 ? result.slice(diffStart).trimEnd() : result.trimEnd();
-  const diffLines = diff.split("\n");
 
   const viewDiff = () => {
     const pair = splitUnifiedDiff(diff);
@@ -114,33 +114,7 @@ export function EditOutcomeCard({ payload }: EditOutcomeCardProps) {
         </button>
         {expanded && (
           <div className="agent-outcome-details">
-            <pre className="m-0 w-fit min-w-full text-xs leading-tight">
-              {diffLines.map((line, index) => {
-                // Only the change rows and their surrounding context are shown.
-                // Unified-diff metadata ("--- a/", "+++ b/", "@@ ... @@") is not
-                // a change, and the success summary is already shown elsewhere.
-                if (
-                  line.startsWith("--- ") ||
-                  line.startsWith("+++ ") ||
-                  line.startsWith("@@")
-                ) {
-                  return null;
-                }
-                const lineClass = line.startsWith("+")
-                  ? "border-l-4 border-green-600 bg-green-600/20"
-                  : line.startsWith("-")
-                    ? "border-l-4 border-red-900 bg-red-900/30"
-                    : "";
-                return (
-                  <div
-                    key={index}
-                    className={`px-3 py-px font-mono ${lineClass}`}
-                  >
-                    {line || " "}
-                  </div>
-                );
-              })}
-            </pre>
+            <UnifiedDiffView diff={diff} />
           </div>
         )}
       </div>

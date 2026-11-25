@@ -2048,9 +2048,26 @@
 .collapsible-label {
   white-space: nowrap;
 }
+/* Kiro: grid-template-rows 0fr→1fr gives a smooth height animation without
+   a fixed max-height cap (mirrors kiro-ui-agent-chat's style.css). */
 .collapsible-content-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
   overflow: hidden;
+  transition:
+    grid-template-rows 0.18s ease-in-out,
+    opacity 0.18s ease-in-out;
 }
-.collapsible-content-wrapper[data-open="false"] {
-  display: none;
+.collapsible-content-wrapper[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.collapsible-content {
+  min-height: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsible-content-wrapper {
+    transition: none;
+  }
 }

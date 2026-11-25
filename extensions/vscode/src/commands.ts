@@ -55,6 +55,9 @@ import { HumanMessage } from "@langchain/core/messages";
 import { ContinueLLMAdapter } from "./deepagents/ContinueLLMAdapter";
 import { DeepAgentChatPanel } from "./deepagents/DeepAgentChatPanel";
 import { wrapWithDeepAgent } from "./deepagents/DeepAgentLLM";
+import { buildDeepAgentToolViewsLite } from "./deepagents/toolView";
+import { isMcpTool } from "core/tools/registry";
+import { ConfigHandler } from "core/config/ConfigHandler";
 import { setArtifactPusher } from "./deepagents/artifactBridge";
 import {
   setArtifactStoreRoot,
@@ -146,6 +149,7 @@ function applyDeepAgentWrap(config: any) {
         const i = arr.findIndex((m) => m.title === chat.title);
         if (i >= 0) arr[i] = wrapped;
       }
+
       console.log(
         `[DeepAgent] chat model "${chat.title ?? chat.model}" wrapped (workspace=${describeRoots(deepAgentRoot)}) — main chat now uses DeepAgent`,
       );
@@ -274,6 +278,19 @@ const getCommandsMap: (
   // MCP tools for DeepAgent: expose the config source to the wrapped model so
   // MCP servers become part of the DeepAgent tool catalogue.
   deepAgentConfigHandler = configHandler;
+
+  // Single source of truth for tool definitions: DeepAgent. The GUI's tool
+  // list is a view generated from those definitions; Continue-defined MCP
+  // tools are preserved (their config lives in Continue).
+  ConfigHandler.toolViewPatcher = (tools: any[]) => {
+    try {
+      const mcpTools = (tools ?? []).filter(isMcpTool);
+      return [...mcpTools, ...buildDeepAgentToolViewsLite("ide")] as any[];
+    } catch (e) {
+      console.warn("[DeepAgent] failed to build tool views", e);
+      return tools;
+    }
+  };
 
   // DeepAgent engine mode: wrap the selected chat model on every (re)load so the
   // main chat is driven by DeepAgent while the model selector stays unchanged.

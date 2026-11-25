@@ -1,7 +1,7 @@
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
 import { ToolCallState } from "core";
 import { BuiltInToolNames } from "core/tools/builtIn";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppSelector } from "../../../redux/hooks";
 import { RootState } from "../../../redux/store";
 import FunctionSpecificToolCallDiv from "./FunctionSpecificToolCallDiv";
@@ -21,23 +21,27 @@ export function ToolCallDiv({
   historyIndex,
 }: ToolCallDivProps) {
   const [open, setOpen] = useState(true);
+  const userToggled = useRef(false);
   const availableTools = useAppSelector(
     (state: RootState) => state.config.config.tools,
   );
 
+  // Kiro: expand while tools are RUNNING so the user sees progress, then
+  // collapse automatically once everything is done. Respect an explicit user
+  // toggle for the lifetime of this group (component is keyed by message).
+  const hasRunning = (toolCallStates ?? []).some((c) => c.status !== "done");
+  useEffect(() => {
+    if (userToggled.current) return;
+    setOpen(hasRunning);
+  }, [hasRunning]);
+
   if (!toolCallStates?.length) return null;
 
-  // Group whenever there are 2+ calls in the item — NOT gated on streaming
-  // completeness. Gating on it made the whole block re-parent from loose rows
-  // into the bordered group container the moment the first call started
-  // executing ("generating" -> "calling"), which read as a mid-flow flash.
-  // Mounting the group from the first render keeps the structure stable
-  // through generating -> calling -> done.
-  const shouldShowGroupedUI = toolCallStates.length > 1;
-  const activeCalls = toolCallStates.filter(
-    (call) => call.status !== "canceled",
-  );
-  const pendingCalls = toolCallStates.filter((call) => call.status !== "done");
+  // Kiro groups even a SINGLE completed tool call into a collapsible row
+  // ("1 tool call"). Keeping the group from the first render — never gating on
+  // streaming completeness — makes the structure stable through
+  // generating -> calling -> done, so nothing re-parents mid-flow.
+  const shouldShowGroupedUI = toolCallStates.length >= 1;
 
   const renderToolCall = (toolCallState: ToolCallState) => {
     const tool = availableTools.find(
@@ -73,11 +77,14 @@ export function ToolCallDiv({
       );
     }
 
-    // Trying this out while it's an experimental feature
-    // Obviously missing the truncate and args buttons
-    // All the info from args is displayed here
-    // But we'd need a nicer place to put the truncate button and the X icon when tool call fails
+    // Cards that render their OWN Kiro-style agent-outcome summary (status icon
+    // + title + details) must not be wrapped in ToolCallDisplay — that would
+    // double the status icon and title. Native DeepAgent tool calls carry a
+    // `deepagent-` id prefix (see DeepAgentLLM); every such card owns its header.
+    const isNativeDeepAgentCard =
+      toolCallState.toolCallId?.startsWith("deepagent-");
     if (
+      isNativeDeepAgentCard ||
       functionName === BuiltInToolNames.SingleFindAndReplace ||
       functionName === BuiltInToolNames.MultiEdit ||
       functionName === BuiltInToolNames.RunTerminalCommand
@@ -109,23 +116,31 @@ export function ToolCallDiv({
 
   if (shouldShowGroupedUI) {
     return (
-      <div className="border-border rounded-lg border px-4 py-3 pb-0">
+      <div
+        className="collapsible-container"
+        data-open={open ? "true" : "false"}
+      >
         <GroupedToolCallHeader
           toolCallStates={toolCallStates}
-          activeCalls={pendingCalls.length > 0 ? pendingCalls : activeCalls}
           open={open}
-          onToggle={() => setOpen(!open)}
+          running={hasRunning}
+          onToggle={() => {
+            userToggled.current = true;
+            setOpen(!open);
+          }}
         />
         <div
-          className={`overflow-y-auto transition-all duration-300 ease-in-out ${
-            open ? "max-h-[50vh] opacity-100" : "max-h-0 opacity-0"
-          }`}
+          className="collapsible-content-wrapper"
+          data-open={open ? "true" : "false"}
+          aria-hidden={!open}
         >
-          {toolCallStates.map((toolCallState) => (
-            <div className="py-1 pl-6" key={toolCallState.toolCallId}>
-              {renderToolCall(toolCallState)}
-            </div>
-          ))}
+          <div className="collapsible-content tool-call-group-content">
+            {toolCallStates.map((toolCallState) => (
+              <div className="py-1 pl-6" key={toolCallState.toolCallId}>
+                {renderToolCall(toolCallState)}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );

@@ -253,7 +253,16 @@ export function UserInputCard({
             {cleanQuestion(effective.question)}
           </span>
         </div>
-        {answer && <div className="user-input-outcome-answer">{answer}</div>}
+        {answer && (
+          <div className="agent-outcome-details">
+            <div
+              className="user-input-outcome-answer"
+              data-testid="user-input-answer"
+            >
+              {answer}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

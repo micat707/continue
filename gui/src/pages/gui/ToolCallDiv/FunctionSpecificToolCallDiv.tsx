@@ -7,6 +7,9 @@ import { FindAndReplaceDisplay } from "./FindAndReplace";
 import { ReadFile } from "./ReadFile";
 import { RunTerminalCommand } from "./RunTerminalCommand";
 import { UserInputCard } from "./UserInputCard";
+import { ExecutePwshCard } from "./ExecutePwshCard";
+import { SpecWorkflowCard } from "./SpecWorkflowCard";
+import { GenericToolCallCard } from "./GenericToolCallCard";
 
 function FunctionSpecificToolCallDiv({
   toolCallState,
@@ -26,9 +29,11 @@ function FunctionSpecificToolCallDiv({
           relativeFilepath={args?.filepath ?? ""}
           fileContents={args?.contents ?? ""}
           historyIndex={historyIndex}
+          toolCallState={toolCallState}
         />
       );
     case BuiltInToolNames.ReadFile:
+    case "read_files":
       return (
         <ReadFile toolCallState={toolCallState} historyIndex={historyIndex} />
       );
@@ -82,8 +87,18 @@ function FunctionSpecificToolCallDiv({
       );
     case "user_input":
       return <UserInputCard toolCallState={toolCallState} />;
+    case "execute_pwsh":
+      return <ExecutePwshCard toolCallState={toolCallState} />;
+    case "start_spec_workflow":
+    case "run_spec_tasks":
+      return <SpecWorkflowCard toolCallState={toolCallState} />;
+    // Every remaining DeepAgent tool (fs_write, fs_append, str_replace,
+    // delete_file, file_search, grep_search, list_directory, web_*, DAG task
+    // tools, sub-agent, Kiro extra tools, mcp__*) lands here. The generic card
+    // is Kiro's DefaultToolCall shape plus a clickable file-label and an inline
+    // unified-diff view, so no tool renders as a blank row.
     default:
-      return null;
+      return <GenericToolCallCard toolCallState={toolCallState} />;
   }
 }
 

@@ -13,7 +13,14 @@
 import type { ToolPolicy } from "@continuedev/terminal-security";
 import type { PermissionConfig, PermissionAction } from "./permissions";
 
-/** GUI (Continue built-in) tool name → DeepAgent/Kiro tool name. */
+/**
+ * GUI tool name → DeepAgent tool name.
+ *
+ * After consolidation the GUI tool list IS generated from DeepAgent, so most
+ * of these are now identity mappings. The legacy Continue names are kept as
+ * aliases for users with old `toolSettings` in localStorage — without them a
+ * previously-configured policy would be silently lost on upgrade.
+ */
 const GUI_TO_DEEPAGENT_TOOL: Record<string, string> = {
   read_file: "read_file",
   read_file_range: "read_file",
@@ -27,6 +34,17 @@ const GUI_TO_DEEPAGENT_TOOL: Record<string, string> = {
   ls: "list_directory",
   search_web: "web_search",
   fetch_url_content: "web_fetch",
+  // New (post-consolidation) names — identity mappings.
+  fs_write: "fs_write",
+  fs_append: "fs_append",
+  append_lines: "append_lines",
+  str_replace: "str_replace",
+  execute_pwsh: "execute_pwsh",
+  web_search: "web_search",
+  web_fetch: "web_fetch",
+  user_input: "user_input",
+  list_directory: "list_directory",
+  file_search: "file_search",
 };
 
 /** ToolPolicy (GUI) → PermissionAction (DeepAgent). */

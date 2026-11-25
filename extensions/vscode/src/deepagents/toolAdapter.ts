@@ -16,7 +16,7 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { ContinueConfig } from "core";
-import { MCPManagerSingleton } from "../core/context/mcp/MCPManagerSingleton";
+import { MCPManagerSingleton } from "core/context/mcp/MCPManagerSingleton";
 import { getMcpToolRef, isMcpTool, type Tool } from "core/tools/registry";
 
 const logPrefix = "[DeepAgent][MCP]";

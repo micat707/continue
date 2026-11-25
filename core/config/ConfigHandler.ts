@@ -29,6 +29,13 @@ export type { ProfileDescription };
 type ConfigUpdateFunction = (payload: ConfigResult<ContinueConfig>) => void;
 
 export class ConfigHandler {
+  /**
+   * Optional hook: lets the IDE host replace the GUI's tool list with a view
+   * generated from the authoritative harness (DeepAgent). MCP tools produced
+   * by Continue config are preserved by the hook. Set once at startup.
+   */
+  static toolViewPatcher?: (tools: any[]) => any[];
+
   private readonly globalContext = new GlobalContext();
   private globalLocalProfileManager: ProfileLifecycleManager;
 
@@ -309,9 +316,15 @@ export class ConfigHandler {
         configLoadInterrupted: true,
       };
     }
-    return await this.currentProfile.getSerializedConfig(
+    const result = await this.currentProfile.getSerializedConfig(
       this.additionalContextProviders,
     );
+    if (ConfigHandler.toolViewPatcher && result.config) {
+      result.config.tools = ConfigHandler.toolViewPatcher(
+        result.config.tools ?? [],
+      );
+    }
+    return result;
   }
 
   async loadConfig(): Promise<ConfigResult<ContinueConfig>> {

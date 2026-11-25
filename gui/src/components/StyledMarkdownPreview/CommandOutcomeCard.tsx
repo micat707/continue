@@ -4,7 +4,6 @@ import {
   getExecuteBuffer,
   getExecuteDone,
   subscribeExecuteProgress,
-  clearExecuteProgress,
 } from "./executeProgressStore";
 
 interface CommandOutcomeCardProps {
@@ -89,10 +88,11 @@ export function CommandOutcomeCard({ payload }: CommandOutcomeCardProps) {
         exitCode: d.exitCode,
       });
     });
-    return () => {
-      unsubscribe();
-      clearExecuteProgress(runId);
-    };
+    // Do NOT clear the run here: a native toolCall card may remount while the
+    // command is still running (status change, session refresh). The store is
+    // self-cleaning once done (see subscribeExecuteProgress unsubscribe) and
+    // capped at MAX_LIVE_BYTES, so leaving it is both safe and race-free.
+    return unsubscribe;
   }, [isLive, data.runId]);
 
   // Keep auto-scrolling to the newest line unless the user scrolled up to read

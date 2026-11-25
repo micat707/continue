@@ -651,15 +651,45 @@ async function buildSessionRuntime(
             try {
               const name = call.name ?? "tool";
               const input = formatToolInput(await call.input);
-              // Tools mirrored natively (user_input + MCP) share one stable id
-              // between tool_call and tool_result. The `deepagent-` prefix tells
-              // the GUI this tool already ran inside DeepAgent — Continue's
-              // tool loop must not execute it a second time.
-              const isMcpTool = name.startsWith("mcp__");
-              const structured = name === "user_input" || isMcpTool;
-              const structuredToolCallId = `${
-                isMcpTool ? `deepagent-${name}` : "deepagent-userinput"
-              }-${call.id ?? uuidv4()}`;
+              // Every tool shares one stable id between tool_call and
+              // tool_result. The `deepagent-` prefix tells the GUI this tool
+              // already ran inside DeepAgent — Continue's tool loop must not
+              // execute it a second time.
+              const isExecute = name === "execute_pwsh";
+              // Every DeepAgent tool now goes through the native toolCall /
+              // toolResult channel (stable id → in-place card update, Kiro
+              // toolCallUpdate semantics). The GUI maps each name to a card in
+              // FunctionSpecificToolCallDiv, with a generic card as fallback.
+              // Old sessions still render their persisted markdown blocks via
+              // rewriteDeepAgentToolBlocks — that path is untouched.
+              const structured = true;
+              // Give every structured tool a stable, name-based id so its card
+              // updates in place (Kiro toolCallUpdate). The `deepagent-` prefix
+              // tells Continue's tool loop the tool already ran inside DeepAgent.
+              const structuredToolCallId = `deepagent-${name}-${
+                call.id ?? uuidv4()
+              }`;
+              // For execute: allocate the runId BEFORE emitting the tool_call so
+              // the GUI card can subscribe to `deepagentExecuteProgress[runId]`
+              // the moment it mounts (Kiro's streamedShellOutput[runId] model).
+              const runId = isExecute ? uuidv4() : undefined;
+              if (runId) setExecuteRunId(runId);
+              // Inject runId into the model-facing arguments so parsedArgs.runId
+              // is available on the toolCallState in the GUI. Keep the original
+              // command/input untouched for the actual tool execution.
+              const toolCallArgs =
+                runId && input
+                  ? (() => {
+                      try {
+                        return JSON.stringify({
+                          ...JSON.parse(input),
+                          __runId: runId,
+                        });
+                      } catch {
+                        return input;
+                      }
+                    })()
+                  : input;
               // Track files the agent deliberately wrote/edited this session so
               // the GUI can list "changes this conversation made" after answering
               // (build artifacts from `execute` are intentionally excluded).
@@ -694,36 +724,18 @@ async function buildSessionRuntime(
                   // args not yet parseable — skip this one
                 }
               }
-              // The toolCalls stream yields as soon as the call STARTS (output
-              // is a promise that resolves later). For `execute`, surface a SINGLE
-              // pending Run Command card at execution start. The live output is
-              // streamed separately via the `deepagentExecuteProgress` webview
-              // event (keyed by a fresh runId), so we never re-emit pending
-              // blocks and the GUI has nothing to dedupe. When `call.output`
-              // resolves below, the completed block replaces this card.
-              if (name === "execute_pwsh") {
-                const runId = uuidv4();
-                setExecuteRunId(runId);
-                queue.push({
-                  kind: "text",
-                  text: formatToolBlock(
-                    name,
-                    input,
-                    JSON.stringify({ running: true, output: "", runId }),
-                  ),
-                });
-              } else if (structured) {
-                // Native tool_call for user_input + MCP tools: the GUI renders
-                // it via toolCallState keyed by this stable id, so the result
-                // updates in place (Kiro's toolCallUpdate semantics) with no
-                // markdown-rewrite jitter. The `deepagent-` id prefix prevents
-                // Continue's tool loop from running it a second time.
+              // Native tool_call for user_input / MCP / execute: the GUI renders
+              // it via toolCallState keyed by this stable id, so the result
+              // updates in place (Kiro's toolCallUpdate semantics) with no
+              // markdown-rewrite jitter. The `deepagent-` id prefix prevents
+              // Continue's tool loop from running it a second time.
+              if (structured) {
                 queue.push({
                   kind: "toolCall",
                   toolCall: {
                     id: structuredToolCallId,
                     type: "function",
-                    function: { name, arguments: input },
+                    function: { name, arguments: toolCallArgs },
                   },
                 });
               }
@@ -747,23 +759,34 @@ async function buildSessionRuntime(
                 // Complete the structured tool call: same toolCallId, so the GUI
                 // updates the existing card's status/output in place (Kiro's
                 // toolCallUpdate semantics) instead of creating a new card.
+                // For execute, attach runId to the envelope so the card can stop
+                // subscribing to live progress and show the final result even if
+                // a progress chunk was missed.
+                let finalContent = output;
+                if (runId) {
+                  try {
+                    const envelope = JSON.parse(output) as Record<
+                      string,
+                      unknown
+                    >;
+                    finalContent = JSON.stringify({ ...envelope, runId });
+                  } catch {
+                    finalContent = JSON.stringify({
+                      output,
+                      exitCode: null,
+                      runId,
+                    });
+                  }
+                }
                 queue.push({
                   kind: "toolResult",
                   toolCallId: structuredToolCallId,
-                  content: output,
+                  content: finalContent,
                 });
               } else {
                 queue.push({
                   kind: "text",
-                  text: formatToolBlock(
-                    name,
-                    input,
-                    output,
-                    // The execute card keeps a head + a tail (the tail carries
-                    // BUILD SUCCESS/FAILURE), so it needs a bigger budget than
-                    // the 2000-char default.
-                    name === "execute_pwsh" ? 4000 : undefined,
-                  ),
+                  text: formatToolBlock(name, input, output),
                 });
               }
             } catch {

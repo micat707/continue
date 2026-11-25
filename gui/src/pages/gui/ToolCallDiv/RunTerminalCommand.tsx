@@ -8,19 +8,24 @@ interface RunTerminalCommandToolCallProps {
   toolCallId: string | undefined;
 }
 
+/**
+ * Kiro-style `CommandToolCall` card for the native `run_terminal_command` tool.
+ *
+ * Kiro's card is always a one-row Summary (terminal status icon + "Run Command"
+ * + cwd) that expands into Details holding the command text and its terminal
+ * output. The outer ToolCallDiv already provides the collapsible tool group, so
+ * this card owns only its own Summary/Details — no nested "1 tool call" toggle.
+ */
 export function RunTerminalCommand(props: RunTerminalCommandToolCallProps) {
-  // For errored status, show any output (error messages)
-  // Otherwise look for terminal output specifically
   const isErrored = props.toolCallState.status === "errored";
   const outputItem = isErrored
-    ? props.toolCallState.output?.[0] // Get first output item for errors
+    ? props.toolCallState.output?.[0]
     : props.toolCallState.output?.find((item) => item.name === "Terminal");
 
   const terminalContent = outputItem?.content || "";
   const statusMessage = outputItem?.status || "";
   const isRunning = props.toolCallState.status === "calling";
 
-  // Determine status type
   let statusType: "running" | "completed" | "failed" | "background" =
     "completed";
   if (isRunning) {
@@ -31,29 +36,77 @@ export function RunTerminalCommand(props: RunTerminalCommandToolCallProps) {
     statusType = "background";
   }
 
-  // Kiro wraps each tool call in a collapsible group: collapsed by default
-  // (so a long command log stays out of the way), auto-expanded while it is
-  // still running or when it errored (so the user sees the result / failure).
-  const [open, setOpen] = useState(isRunning || isErrored);
+  const args = (props.toolCallState.parsedArgs ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const cwd = typeof args.cwd === "string" ? args.cwd : undefined;
+
+  const statusClass =
+    statusType === "running"
+      ? "agent-icon-running"
+      : statusType === "failed"
+        ? "agent-icon-rejected"
+        : statusType === "background"
+          ? "agent-icon-pending"
+          : "agent-icon-accepted";
+
+  // Kiro: expand while the command runs (or on failure), start collapsed once
+  // it succeeded so a long log stays out of the way.
+  const [expanded, setExpanded] = useState(
+    isRunning || statusType === "failed",
+  );
 
   return (
-    <div className="collapsible-container" data-open={open ? "true" : "false"}>
-      <button
-        type="button"
-        className="collapsible-toggle"
-        aria-expanded={open}
-        aria-label={open ? "Collapse" : "Expand"}
-        onClick={() => setOpen(!open)}
+    <div
+      className={`agent-outcome agent-outcome-command${
+        isRunning ? "agent-outcome-running" : ""
+      }`}
+    >
+      <div
+        className="agent-outcome-summary cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+        title="Toggle command output"
       >
-        <i className="kiro-icon codicon codicon-chevron-right collapsible-chevron" />
-        <span className="collapsible-label">1 tool call</span>
-      </button>
+        <span className={`agent-outcome-status ${statusClass}`}>
+          <i
+            className={`kiro-icon codicon ${
+              isRunning ? "codicon-loading" : "codicon-terminal"
+            }`}
+          />
+        </span>
+        <span className="tool-call-title">Run Command</span>
+        {statusType === "failed" && (
+          <span className={`kiro-command-status ${statusClass}`}>✗ 失败</span>
+        )}
+        {statusType === "background" && (
+          <span className="kiro-command-status agent-icon-pending">
+            后台运行中
+          </span>
+        )}
+        {cwd && (
+          <span
+            className="kiro-command-cwd"
+            title={`Working directory: ${cwd}`}
+          >
+            {cwd}
+          </span>
+        )}
+        <i
+          className={`kiro-icon codicon codicon-chevron-right outcome-chevron ${
+            expanded ? "expanded" : ""
+          }`}
+        />
+      </div>
+
       <div
         className="collapsible-content-wrapper"
-        data-open={open ? "true" : "false"}
-        aria-hidden={!open}
+        data-open={expanded ? "true" : "false"}
+        aria-hidden={!expanded}
       >
-        <div className="collapsible-content">
+        <div className="agent-outcome-details">
+          <pre className="kiro-command-text">{props.command}</pre>
+          <hr className="agent-outcome-divider" />
           <UnifiedTerminalCommand
             command={props.command}
             output={terminalContent}

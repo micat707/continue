@@ -22,18 +22,19 @@ created: 2026-10-09
 
 ## 📚 文档清单
 
-| 笔记                                          | 定位                 | 一句话                                                              |
-| --------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
-| [[实现一个类 Continue 的带界面 VS Code 插件]] | 方法论               | 从零开始，要实现哪些接口/钩子的通用指南                             |
-| [[Continue 如何实现 VS Code 的钩子与接口]]    | 源码剖析             | Continue 真实代码是怎么落地那些接口的                               |
-| [[VS Code Webview API]]                       | 基础                 | 自建界面方案的底层 API                                              |
-| [[VS Code Chat Participant API]]              | 基础                 | 复用原生 Chat 面板的底层 API                                        |
-| [[Continue 的 Diff 生成与渲染]]               | 源码剖析             | 编辑文件从模型意图到行内绿/红高亮的全链路                           |
-| [[改造 Continue 为右侧锁死 Chat 面板]]        | fork 定制 · 复现记录 | 禁用原生 chat + Continue 面板移到右侧并锁死,升级后照此复现          |
-| [[构建与打包脚本速查]]                        | 工具 · 速查          | Continue(monorepo)与 VS Code fork 各自的编译/打包/启动命令          |
-| [[Kiro 从 Continue 到自研的演变对照]]         | 逆向对照             | 对比两版 kiro-agent 清单,看 Kiro 如何从基于 Continue 演变到完全自研 |
-| [[Kiro 的 ACP 工具与扩展方法清单]]            | 逆向对照 · 协议      | Kiro 三层工具路径、5 个 ClientCapabilityTool、120 个 `_kiro/*` 方法 |
-| [[把 Continue 内置进 fork 发行版]]            | 发布 · 方案          | 下载即带 Continue 的产物内置方案(可行性/机制/风险,探讨阶段)         |
+| 笔记                                          | 定位                 | 一句话                                                                    |
+| --------------------------------------------- | -------------------- | ------------------------------------------------------------------------- |
+| [[实现一个类 Continue 的带界面 VS Code 插件]] | 方法论               | 从零开始，要实现哪些接口/钩子的通用指南                                   |
+| [[Continue 如何实现 VS Code 的钩子与接口]]    | 源码剖析             | Continue 真实代码是怎么落地那些接口的                                     |
+| [[VS Code Webview API]]                       | 基础                 | 自建界面方案的底层 API                                                    |
+| [[VS Code Chat Participant API]]              | 基础                 | 复用原生 Chat 面板的底层 API                                              |
+| [[Continue 的 Diff 生成与渲染]]               | 源码剖析             | 编辑文件从模型意图到行内绿/红高亮的全链路                                 |
+| [[改造 Continue 为右侧锁死 Chat 面板]]        | fork 定制 · 复现记录 | 禁用原生 chat + Continue 面板移到右侧并锁死,升级后照此复现                |
+| [[构建与打包脚本速查]]                        | 工具 · 速查          | Continue(monorepo)与 VS Code fork 各自的编译/打包/启动命令                |
+| [[Kiro 从 Continue 到自研的演变对照]]         | 逆向对照             | 对比两版 kiro-agent 清单,看 Kiro 如何从基于 Continue 演变到完全自研       |
+| [[Kiro 的 ACP 工具与扩展方法清单]]            | 逆向对照 · 协议      | Kiro 三层工具路径、5 个 ClientCapabilityTool、120 个 `_kiro/*` 方法       |
+| [[把 Continue 内置进 fork 发行版]]            | 发布 · 方案          | 下载即带 Continue 的产物内置方案(可行性/机制/风险,探讨阶段)               |
+| [[工具卡片路由与状态模型对比]]                | 逆向对照 · 待决策    | Kiro 按 id 状态切片 vs Continue 按工具名 switch：性能/抖动/老会话重建对比 |
 
 ---
 
@@ -77,6 +78,7 @@ flowchart TD
 >
 > 1. [[Kiro 从 Continue 到自研的演变对照]]——先看宏观演变路径
 > 2. [[Kiro 的 ACP 工具与扩展方法清单]]——再看工具分三层、ClientCapabilityTool 的 `extMethod` 分发、120 个 `_kiro/*` 方法
+> 3. [[工具卡片路由与状态模型对比]]——最后看 UI 层：Kiro 按 id 状态切片 vs Continue 按工具名 switch，以及是否跟进改造的待决策点
 
 ---
 
