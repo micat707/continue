@@ -1,5 +1,4 @@
 import { ToolCallState } from "core";
-import { ToggleWithIcon } from "./ToggleWithIcon";
 
 interface GroupedToolCallHeaderProps {
   toolCallStates: ToolCallState[];
@@ -35,7 +34,11 @@ export function GroupedToolCallHeader({
       aria-label={open ? "Collapse" : "Expand"}
       onClick={onToggle}
     >
-      <ToggleWithIcon isToggleable open={open} />
+      <span
+        aria-hidden="true"
+        style={{ display: "inline-block", width: 10, flexShrink: 0 }}
+      />
+      <i className="kiro-icon codicon codicon-chevron-right collapsible-chevron" />
       <span className="collapsible-label">{label}</span>
     </button>
   );

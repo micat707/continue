@@ -2026,6 +2026,8 @@
   flex-direction: row;
   align-items: center;
   gap: 4px; /* --spacing-xs */
+  /* Padding-left is applied to the chevron via a child selector below — a
+     plain button padding gets reset by Tailwind's preflight in this webview. */
   padding: 2px 0;
   border: none;
   background: transparent;
@@ -2040,6 +2042,8 @@
   font-size: 14px;
   transition: transform 0.15s ease;
 }
+/* 折叠行相对正文右移 10px 对齐 Kiro：用 GroupedToolCallHeader 内的
+   10px 宽 <span> spacer 实现，不依赖 button 的 padding/transform。 */
 .collapsible-container[data-open="true"]
   > .collapsible-toggle
   .collapsible-chevron {
@@ -2051,20 +2055,32 @@
 /* Kiro: grid-template-rows 0fr→1fr gives a smooth height animation without
    a fixed max-height cap (mirrors kiro-ui-agent-chat's style.css). */
 .collapsible-content-wrapper {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  overflow: hidden;
-  transition:
-    grid-template-rows 0.18s ease-in-out,
-    opacity 0.18s ease-in-out;
+  display: none;
 }
 .collapsible-content-wrapper[data-open="true"] {
+  /* Grid 0fr→1fr gives a smooth height animation without a max-height cap,
+     matching kiro-ui-agent-chat's style.css. `display:none` when closed is
+     deliberate: the nested 0fr trick leaks height with flex/padded children,
+     which showed up as a large empty gap under a collapsed "N tool calls". */
+  display: grid;
   grid-template-rows: 1fr;
-  opacity: 1;
+  animation: collapsible-reveal 0.18s ease-in-out;
 }
 .collapsible-content {
   min-height: 0;
+  /* Kiro: .collapsible-content { padding-inline: var(--spacing-md) } = 8px */
+  padding-inline: 8px;
+  overflow: hidden;
+}
+@keyframes collapsible-reveal {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .collapsible-content-wrapper {

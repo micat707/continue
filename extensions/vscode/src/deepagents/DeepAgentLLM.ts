@@ -755,6 +755,30 @@ async function buildSessionRuntime(
                   (err instanceof Error ? err.message : String(err));
               }
               toolCount += 1;
+              // invoke_sub_agent: emit an empty envelope as a fallback so the
+              // outer card always reaches "done" even if run.subagents yields no
+              // handle. subagentProducer overwrites this same id with the full
+              // nested tool tree (Kiro SubtaskToolCall) shortly after.
+              if (name === "invoke_sub_agent") {
+                let subName = "sub-agent";
+                try {
+                  const obj = JSON.parse(input) as { name?: unknown };
+                  if (typeof obj.name === "string") subName = obj.name;
+                } catch {
+                  /* keep default */
+                }
+                queue.push({
+                  kind: "toolResult",
+                  toolCallId: structuredToolCallId,
+                  content: JSON.stringify({
+                    __subagent: true,
+                    name: subName,
+                    final: output,
+                    children: [],
+                  }),
+                });
+                continue;
+              }
               if (structured) {
                 // Complete the structured tool call: same toolCallId, so the GUI
                 // updates the existing card's status/output in place (Kiro's
@@ -803,7 +827,110 @@ async function buildSessionRuntime(
         }
       })();
 
+      // Kiro SubtaskToolCall: collect each subagent's own tool calls from the
+      // native `run.subagents` projection and stream them into the GUI as a
+      // JSON envelope on the SAME toolCallId as the outer invoke_sub_agent.
+      // The GUI renders a nested tool group inside the Sub-agent card. `cause`
+      // links the subagent run back to its triggering tool_call_id (verified in
+      // langchain/dist/agents/transformers/subagent.js).
+      const runSubagentProducer = async () => {
+        type Child = {
+          name: string;
+          input: string;
+          output: string;
+          status: string;
+          children?: Child[];
+        };
+
+        const collect = async (
+          sub: any,
+          depth: number,
+        ): Promise<{ children: Child[]; final: string }> => {
+          const children: Child[] = [];
+          const toolCallId = `deepagent-invoke_sub_agent-${
+            sub.cause?.tool_call_id ?? ""
+          }`;
+          let final = "";
+          // Push the whole envelope on every change — same toolCallId means the
+          // GUI updates one card in place (Kiro tool_call_update semantics).
+          const emit = () => {
+            queue.push({
+              kind: "toolResult",
+              toolCallId,
+              content: JSON.stringify({
+                __subagent: true,
+                name: sub.name ?? "sub-agent",
+                final,
+                children,
+              }),
+            });
+          };
+
+          if (depth < 3) {
+            for await (const call of sub.toolCalls ?? []) {
+              if (_signal?.aborted) break;
+              const child: Child = {
+                name: call.name ?? "tool",
+                input: formatToolInput(await call.input),
+                output: "",
+                status: "pending",
+              };
+              children.push(child);
+              emit(); // tool-call row appears immediately
+              try {
+                child.output = formatToolOutput(await call.output);
+                child.status = String(await call.status);
+              } catch (err) {
+                child.status = "error";
+                child.output =
+                  "error: " +
+                  (err instanceof Error ? err.message : String(err));
+              }
+              emit(); // output fills in place
+            }
+            // Grandchild subagents (nested delegation) — same shape.
+            for await (const nested of sub.subagents ?? []) {
+              const nestedData = await collect(nested, depth + 1);
+              children.push({
+                name: `sub-agent: ${nested.name ?? "agent"}`,
+                input: "",
+                output: nestedData.final,
+                status: "completed",
+                children: nestedData.children,
+              } as Child);
+              emit();
+            }
+          }
+          // Final assistant text from the subagent (outer result fallback).
+          try {
+            for await (const msg of sub.messages ?? []) {
+              for await (const token of msg.text ?? []) final += token;
+            }
+          } catch {
+            /* subagent text is best-effort */
+          }
+          emit();
+          return { children, final };
+        };
+
+        try {
+          for await (const sub of run.subagents ?? []) {
+            if (_signal?.aborted) break;
+            await collect(sub, 0);
+          }
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(`[DeepAgent] subagents stream failed | ${err.message}`);
+        }
+      };
+
+      // textProducer streams tokens live. toolProducer must finish before
+      // subagentProducer so its placeholder envelope (children: []) is pushed
+      // first — the subagent's full envelope then overwrites the same id.
+      // run.subagents is log-backed (StreamChannel), so iterating it after the
+      // tool stream still yields every handle.
       await Promise.all([textProducer, toolProducer]);
+      await runSubagentProducer();
       const interrupted =
         Boolean(run.interrupted) || (run.interrupts?.length ?? 0) > 0;
       if (!interrupted) {

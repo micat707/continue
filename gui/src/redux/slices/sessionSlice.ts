@@ -718,10 +718,27 @@ export const sessionSlice = createSlice({
             }
           }
 
+          // DeepAgent HITL: a fresh assistant reply that arrives AFTER all
+          // tool cards in the previous item finished must start a NEW item.
+          // Chat.tsx always renders message.content before <ToolCallDiv>, so
+          // if we append the text to the same item as the answered user_input
+          // cards, a summary like "based on your choices..." shows up ABOVE
+          // the cards it summarizes. Splitting the item puts the text below.
+          // Scoped to DeepAgent cards (deepagent- id) so ordinary Continue
+          // assistant+tool streaming is untouched.
+          const lastStates = lastItem.toolCallStates;
+          const deepAgentToolsDone =
+            !!lastStates?.length &&
+            lastStates.every(
+              (s) =>
+                s.toolCallId?.startsWith("deepagent-") && s.status === "done",
+            );
+
           // The remainder of this function handles streaming messages
           if (
             lastMessage.role !== message.role ||
-            message.role === "tool" // Tool messages should always create new messages
+            message.role === "tool" || // Tool messages should always create new messages
+            (message.role === "assistant" && deepAgentToolsDone)
           ) {
             // Create a new message
             const historyItem: ChatHistoryItemWithMessageId = {

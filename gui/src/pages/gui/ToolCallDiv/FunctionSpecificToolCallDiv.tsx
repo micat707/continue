@@ -10,6 +10,7 @@ import { UserInputCard } from "./UserInputCard";
 import { ExecutePwshCard } from "./ExecutePwshCard";
 import { SpecWorkflowCard } from "./SpecWorkflowCard";
 import { GenericToolCallCard } from "./GenericToolCallCard";
+import { SubagentCard } from "./SubagentCard";
 
 function FunctionSpecificToolCallDiv({
   toolCallState,
@@ -92,6 +93,8 @@ function FunctionSpecificToolCallDiv({
     case "start_spec_workflow":
     case "run_spec_tasks":
       return <SpecWorkflowCard toolCallState={toolCallState} />;
+    case "invoke_sub_agent":
+      return <SubagentCard toolCallState={toolCallState} />;
     // Every remaining DeepAgent tool (fs_write, fs_append, str_replace,
     // delete_file, file_search, grep_search, list_directory, web_*, DAG task
     // tools, sub-agent, Kiro extra tools, mcp__*) lands here. The generic card

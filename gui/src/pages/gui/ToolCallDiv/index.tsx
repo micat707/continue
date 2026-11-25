@@ -136,7 +136,7 @@ export function ToolCallDiv({
         >
           <div className="collapsible-content tool-call-group-content">
             {toolCallStates.map((toolCallState) => (
-              <div className="py-1 pl-6" key={toolCallState.toolCallId}>
+              <div className="py-1" key={toolCallState.toolCallId}>
                 {renderToolCall(toolCallState)}
               </div>
             ))}

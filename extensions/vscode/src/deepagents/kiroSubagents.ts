@@ -78,6 +78,19 @@ export const KIRO_SUBAGENTS: KiroSubAgent[] = [
     mode: "isolated",
     specOnly: true,
   },
+  {
+    // Kiro's spec-workflow sub-agent (extension.js: `Feature Requirements-First
+    // Workflow`, Subagent ID feature-requirements-first-workflow). The workflow
+    // runs Requirements → Design → Tasks; the caller selects the phase via
+    // `preset` ("requirements" | "design" | "tasks"). Registered here so the
+    // model can dispatch it and the GUI's SubagentCard can show its nested tools.
+    name: "feature-requirements-first-workflow",
+    description:
+      "Feature Requirements-First Workflow: Requirements → Design → Tasks. Best for traditional approach where business needs drive technical design for new features. Use when you have clear business requirements but need technical design. The subagent creates the spec documents (requirements.md, design.md, tasks.md) itself using artifacts.",
+    systemPrompt:
+      "You are the Feature Requirements-First Workflow sub-agent. You produce a feature spec in three ordered phases: Requirements → Design → Tasks. The caller selects the phase via the `preset` argument ('requirements' | 'design' | 'tasks'); if absent, run the next phase whose document does not yet exist.\n\nRULES:\n1. NEVER write code or run builds — your job is spec documentation only.\n2. Use read-only tools (list_directory, file_search, grep_search, read_file) to investigate the workspace and any contextFiles the caller supplied before writing a document.\n3. Use the create_artifact tool (kind=markdown) to produce reviewable documents. Target `.kiro/specs/<feature-name>/requirements.md`, `design.md`, `tasks.md` for the three phases. Re-use existing documents as input for later phases.\n4. Requirements phase: EARS-style requirements with acceptance criteria. Design phase: architecture, components, interfaces, and rationale grounded in the requirements. Tasks phase: a numbered, dependency-ordered task list with checkbox items referencing requirement IDs.\n5. Do NOT reveal internal subagent details. Return a concise report of which document you produced and its path, plus any open questions for the user.",
+    mode: "isolated",
+  },
 ];
 
 /**
