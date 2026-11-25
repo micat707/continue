@@ -55,6 +55,7 @@ import {
   buildPermissionsState,
   updatePermissionsLayer,
 } from "../deepagents/permissionsPanel";
+import { setSyncedToolSettings } from "../deepagents/toolPolicyBridge";
 
 import { VsCodeExtension } from "./VsCodeExtension";
 
@@ -199,6 +200,12 @@ export class VsCodeMessenger {
       const sessionId = (data as any)?.sessionId;
       getSessionPermissionHandle(sessionId)?.clear();
       return buildPermissionsState(sessionId);
+    });
+
+    // GUI Tools-page policies → DeepAgent. The GUI pushes its toolSettings
+    // snapshot here; DeepAgent's recomputePolicy() reads it every turn.
+    this.onWebview("deepAgent/syncToolSettings", async ({ data }) => {
+      setSyncedToolSettings((data as any)?.toolSettings ?? {});
     });
 
     // The sidebar webview is too narrow for the config pages — when the user

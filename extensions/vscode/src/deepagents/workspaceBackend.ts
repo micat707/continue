@@ -3264,7 +3264,7 @@ export function withApprovedPaths<T extends object>(
     read: "read_file",
     ls: "list_directory",
     write: "fs_write",
-    append: "fs_append",
+    append: "append_lines",
     edit: "str_replace",
     delete: "delete_file",
     glob: "file_search",

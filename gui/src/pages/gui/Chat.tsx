@@ -22,11 +22,6 @@ import TimelineItem from "../../components/gui/TimelineItem";
 import { NewSessionButton } from "../../components/mainInput/belowMainInput/NewSessionButton";
 import ThinkingBlockPeek from "../../components/mainInput/belowMainInput/ThinkingBlockPeek";
 import ContinueInputBox from "../../components/mainInput/ContinueInputBox";
-import {
-  useDeepAgentUserInput,
-  UserInputQuestionCard,
-} from "../../pages/gui/ToolCallDiv/UserInputCard";
-
 import { TurnNavigator, type TurnItem } from "./TurnNavigator";
 import { useOnboardingCard } from "../../components/OnboardingCard";
 import StepContainer from "../../components/StepContainer";
@@ -247,11 +242,6 @@ export function Chat() {
   );
   const hasPendingConfirmation =
     pendingToolCalls.length > 0 || pendingConfirmationApplyStates.length > 0;
-  // DeepAgent user_input: the agent is suspended inside the tool call waiting
-  // for the user. Its card shares the aboveInput high-water slot with the
-  // streaming bar, so the two never overlap — the card replaces the "answering"
-  // bar while a question is pending.
-  const userInput = useDeepAgentUserInput();
   // Busy = the turn is still in flight (streaming / tool running / apply
   // streaming / awaiting a confirmation). Gates both the per-turn footer and the
   // session-changes summary so neither appears until the agent settles.
@@ -721,19 +711,8 @@ export function Chat() {
           }
           inputId={MAIN_EDITOR_INPUT_ID}
           aboveInput={
-            userInput.active ? (
-              /* DeepAgent user_input card occupies the same reserved LumpSlot
-                 as the streaming bar. While the agent is suspended waiting for
-                 the answer, the "正在回答中" bar is hidden so they never overlap. */
-              <UserInputQuestionCard
-                key={userInput.requestId}
-                requestId={userInput.requestId}
-                question={userInput.question}
-                options={userInput.options}
-                onSubmit={userInput.respond}
-              />
-            ) : (isStreaming || isApplyingState || hasRunningToolCall) &&
-              !hasPendingConfirmation ? (
+            (isStreaming || isApplyingState || hasRunningToolCall) &&
+            !hasPendingConfirmation ? (
               /* The streaming bar lives INSIDE the main input's reserved
                  LumpSlot (see ContinueInputBox aboveInput), sharing one
                  high-water slot with the review-changes card: the slot grows

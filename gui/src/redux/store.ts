@@ -158,8 +158,12 @@ const persistedReducer = persistReducer<ReturnType<typeof rootReducer>>(
   rootReducer,
 );
 
+/** Messenger used by the module-level `store` singleton (for policy sync). */
+let defaultMessenger: IIdeMessenger | undefined;
+
 export function setupStore(options: { ideMessenger?: IIdeMessenger }) {
   const ideMessenger = options.ideMessenger ?? new IdeMessenger();
+  if (!defaultMessenger) defaultMessenger = ideMessenger;
 
   const logger = createLogger({
     // Customize logger options if needed
@@ -206,3 +210,25 @@ export type RootState = ReturnType<typeof rootReducer>;
 export type AppDispatch = typeof store.dispatch;
 
 export const persistor = persistStore(store);
+
+/**
+ * Mirror GUI tool policies to the IDE so DeepAgent's HITL uses the same
+ * decisions the user set on the Tools page. Subscribing here (rather than in
+ * each reducer/UI handler) also covers localStorage rehydration and group
+ * toggles. Fire-and-forget + debounce: policy changes are infrequent and the
+ * IDE only needs the latest snapshot.
+ */
+let lastSyncedToolSettings = "";
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
+store.subscribe(() => {
+  const settings = store.getState().ui.toolSettings;
+  const snapshot = JSON.stringify(settings);
+  if (snapshot === lastSyncedToolSettings) return;
+  lastSyncedToolSettings = snapshot;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    defaultMessenger?.post("deepAgent/syncToolSettings", {
+      toolSettings: settings,
+    });
+  }, 200);
+});

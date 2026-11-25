@@ -74,7 +74,10 @@ const TOOL_DISPLAY_TO_ID: Record<string, string> = {
   write: "fs_write",
   edit: "str_replace",
   bash: "execute_pwsh",
-  web_search: "remote_web_search",
+  // Kiro name -> deepagents library internal name. The library hardcodes
+  // `fs_append`; we expose `append_lines` to the model and map back on dispatch.
+  append_lines: "fs_append",
+  // web_search is already the Kiro tool id — no display-name alias needed.
 };
 
 // The raw wire-level (provider-format) logger lives in core but the on-disk
@@ -286,7 +289,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
       out.push({
         type: "function",
         function: {
-          name: c.name,
+          // The deepagents library hardcodes `fs_append`; expose Kiro's
+          // `append_lines` to the model (TOOL_DISPLAY_TO_ID maps calls back).
+          name: c.name === "fs_append" ? "append_lines" : c.name,
           description: c.description,
           parameters: parameters as Record<string, unknown>,
         },

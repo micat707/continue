@@ -42,7 +42,8 @@ import {
   withApprovedPaths,
   setExecuteRunId,
 } from "./workspaceBackend";
-import { createDeepAgentTools } from "./acpToolKit";
+import { createDeepAgentToolsAsync } from "./acpToolKit";
+import type { ContinueConfig } from "core";
 import {
   createKiroContextFileResolver,
   kiroPathToReal,
@@ -71,6 +72,7 @@ import {
 } from "./permissions";
 import { loadGlobalConfig, loadWorkspaceConfig } from "./permissionStore";
 import { requestHitlDecision } from "./hitlBridge";
+import { getGuiPolicyLayer } from "./toolPolicyBridge";
 import {
   formatExecuteOutput,
   formatToolBlock,
@@ -112,8 +114,23 @@ export function getSessionPermissionHandle(
   return activeSessionPermissions.impl;
 }
 
-/** Tiny multi-producer / single-consumer queue for merging two event streams. */
-type QueueItem = { kind: "text" | "thinking"; text: string };
+/**
+ * Tiny multi-producer / single-consumer queue for merging event streams.
+ * `toolCall` / `toolResult` let a tool run through Continue's native
+ * structured tool_call channel (stable toolCallId React key → no card jitter),
+ * instead of the markdown-text + regex-rewrite path.
+ */
+type QueueItem =
+  | { kind: "text" | "thinking"; text: string }
+  | {
+      kind: "toolCall";
+      toolCall: {
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      };
+    }
+  | { kind: "toolResult"; toolCallId: string; content: string };
 
 class AsyncTextQueue {
   private items: QueueItem[] = [];
@@ -121,7 +138,9 @@ class AsyncTextQueue {
   private closed = false;
 
   push(item: QueueItem) {
-    if (this.closed || !item.text) return;
+    if (this.closed) return;
+    if ((item.kind === "text" || item.kind === "thinking") && !item.text)
+      return;
     this.items.push(item);
     const wake = this.resolvers.shift();
     if (wake) wake();
@@ -203,12 +222,13 @@ type SessionRuntime = {
   ): AsyncGenerator<ChatMessage>;
 };
 
-function buildSessionRuntime(
+async function buildSessionRuntime(
   underlying: ILLM,
   rootOverride: string | undefined,
   sessionId: string,
-  onInvoke?: () => void,
-): SessionRuntime {
+  onInvoke: (() => void) | undefined,
+  getConfig: (() => Promise<ContinueConfig | undefined>) | undefined,
+): Promise<SessionRuntime> {
   const adapter = new ContinueLLMAdapter({
     llm: underlying,
     // The owning chat session id. Threaded all the way to the wire-level RAW
@@ -270,11 +290,21 @@ function buildSessionRuntime(
     sessionPolicy,
   );
   const recomputePolicy = () => {
-    merged = mergeRules(
-      loadGlobalConfig(),
-      loadWorkspaceConfig(),
-      sessionPolicy,
-    );
+    // GUI Tools-page policies are the single source of truth for per-tool
+    // decisions. Fold them into the session layer (highest precedence), ahead
+    // of this session's transient path approvals so an explicit GUI "disabled"
+    // still wins. DeepAgent's own red lines (outside files / execute never
+    // auto-allow) are applied later by resolveAction()/resolveExecuteAction().
+    const guiLayer = getGuiPolicyLayer();
+    const withGui: PermissionConfig = {
+      trustedDirs: sessionPolicy.trustedDirs,
+      // GUI rules LAST: within a layer mergeRules uses last-write-wins, so an
+      // explicit Tools-page decision overrides transient session entries.
+      trustRules: [...sessionPolicy.trustRules, ...guiLayer.trustRules],
+      untrustRules: [...sessionPolicy.untrustRules, ...guiLayer.untrustRules],
+      executeAllowlist: sessionPolicy.executeAllowlist,
+    };
+    merged = mergeRules(loadGlobalConfig(), loadWorkspaceConfig(), withGui);
   };
   recomputePolicy();
 
@@ -334,6 +364,8 @@ function buildSessionRuntime(
     "read_file",
     "read_files",
     "fs_write",
+    // LangGraph dispatches the library-internal name (model-facing is
+    // `append_lines`, see ContinueLLMAdapter).
     "fs_append",
     "str_replace",
     "delete_file",
@@ -407,6 +439,38 @@ function buildSessionRuntime(
   // Tools are now natively named with Kiro names (no alias middleware), so the
   // batched HITL scan sees the real tool names directly — governedTools and the
   // execute/control_process rules above already cover them.
+  // MCP tools are discovered asynchronously and execute inside this DeepAgent
+  // loop (never via Continue's tools/call harness).
+  const { tools: allTools, mcpInfo } = await createDeepAgentToolsAsync({
+    surface: "ide",
+    sessionId,
+    rootOverride,
+    getConfig,
+    specController,
+    kiroExtraDeps: {
+      toRealPath: (p) => kiroPathToReal(p, rootOverride),
+      workspaceRoot: () =>
+        getWorkspaceLayout(rootOverride).mounts[0]?.realPath ?? process.cwd(),
+      sessionId,
+      pushArtifact: pushArtifactToGui,
+      artifactWriter: createArtifact,
+      symbolResolver: async (filePath, content) => {
+        const { getSymbolsForFile } = require("core/util/treeSitter");
+        const symbols = await getSymbolsForFile(filePath, content);
+        return symbols as any;
+      },
+    },
+  });
+
+  // MCP tools are external/unknown code: only servers Continue marked as
+  // protected force an approval card; the rest auto-run, matching Continue's
+  // own trust model as closely as the extension-side config allows.
+  for (const mcp of mcpInfo) {
+    interruptOn[mcp.name] = {
+      allowedDecisions: ["approve", "reject"],
+      when: () => mcp.requiresApproval,
+    };
+  }
 
   const agent = createDeepAgent({
     model: adapter,
@@ -421,28 +485,9 @@ function buildSessionRuntime(
         override: rootOverride,
         executeDenied,
       }),
-    // Background process management tools (control_process / get_process_output /
-    // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-    // remote_web_search + web_fetch mirror Kiro's search-then-read web workflow.
-    tools: createDeepAgentTools({
-      surface: "ide",
-      sessionId,
-      rootOverride,
-      specController,
-      kiroExtraDeps: {
-        toRealPath: (p) => kiroPathToReal(p, rootOverride),
-        workspaceRoot: () =>
-          getWorkspaceLayout(rootOverride).mounts[0]?.realPath ?? process.cwd(),
-        sessionId,
-        pushArtifact: pushArtifactToGui,
-        artifactWriter: createArtifact,
-        symbolResolver: async (filePath, content) => {
-          const { getSymbolsForFile } = require("core/util/treeSitter");
-          const symbols = await getSymbolsForFile(filePath, content);
-          return symbols as any;
-        },
-      },
-    }),
+    // Pre-loaded above: built-in DeepAgent tools + MCP tools. All execute in
+    // this agent loop; none fall back to Continue's tools/call harness.
+    tools: allTools,
     // MemorySaver keeps the thread state so a paused run can be resumed on the
     // same thread_id after the user's decision.
     checkpointer: new MemorySaver(),
@@ -606,11 +651,22 @@ function buildSessionRuntime(
             try {
               const name = call.name ?? "tool";
               const input = formatToolInput(await call.input);
+              // Tools mirrored natively (user_input + MCP) share one stable id
+              // between tool_call and tool_result. The `deepagent-` prefix tells
+              // the GUI this tool already ran inside DeepAgent — Continue's
+              // tool loop must not execute it a second time.
+              const isMcpTool = name.startsWith("mcp__");
+              const structured = name === "user_input" || isMcpTool;
+              const structuredToolCallId = `${
+                isMcpTool ? `deepagent-${name}` : "deepagent-userinput"
+              }-${call.id ?? uuidv4()}`;
               // Track files the agent deliberately wrote/edited this session so
               // the GUI can list "changes this conversation made" after answering
               // (build artifacts from `execute` are intentionally excluded).
               if (
                 name === "fs_write" ||
+                // LangGraph dispatches the library-internal name; only the
+                // model-facing name is `append_lines` (see ContinueLLMAdapter).
                 name === "fs_append" ||
                 name === "str_replace"
               ) {
@@ -656,15 +712,19 @@ function buildSessionRuntime(
                     JSON.stringify({ running: true, output: "", runId }),
                   ),
                 });
-              } else if (name === "user_input") {
-                // Kiro emits a pending toolCall when the question is asked and
-                // updates it in place on answer. Mirror that: push a pending
-                // block NOW (while call.output waits for the user) so the
-                // question appears in the chat immediately. The completed block
-                // pushed below replaces it (via pending dedup in the GUI).
+              } else if (structured) {
+                // Native tool_call for user_input + MCP tools: the GUI renders
+                // it via toolCallState keyed by this stable id, so the result
+                // updates in place (Kiro's toolCallUpdate semantics) with no
+                // markdown-rewrite jitter. The `deepagent-` id prefix prevents
+                // Continue's tool loop from running it a second time.
                 queue.push({
-                  kind: "text",
-                  text: formatToolBlock(name, input, TOOL_PENDING_MARKER),
+                  kind: "toolCall",
+                  toolCall: {
+                    id: structuredToolCallId,
+                    type: "function",
+                    function: { name, arguments: input },
+                  },
                 });
               }
               let output = "";
@@ -683,18 +743,29 @@ function buildSessionRuntime(
                   (err instanceof Error ? err.message : String(err));
               }
               toolCount += 1;
-              queue.push({
-                kind: "text",
-                text: formatToolBlock(
-                  name,
-                  input,
-                  output,
-                  // The execute card keeps a head + a tail (the tail carries
-                  // BUILD SUCCESS/FAILURE), so it needs a bigger budget than
-                  // the 2000-char default.
-                  name === "execute_pwsh" ? 4000 : undefined,
-                ),
-              });
+              if (structured) {
+                // Complete the structured tool call: same toolCallId, so the GUI
+                // updates the existing card's status/output in place (Kiro's
+                // toolCallUpdate semantics) instead of creating a new card.
+                queue.push({
+                  kind: "toolResult",
+                  toolCallId: structuredToolCallId,
+                  content: output,
+                });
+              } else {
+                queue.push({
+                  kind: "text",
+                  text: formatToolBlock(
+                    name,
+                    input,
+                    output,
+                    // The execute card keeps a head + a tail (the tail carries
+                    // BUILD SUCCESS/FAILURE), so it needs a bigger budget than
+                    // the 2000-char default.
+                    name === "execute_pwsh" ? 4000 : undefined,
+                  ),
+                });
+              }
             } catch {
               // ignore individual tool-event failures
             }
@@ -801,6 +872,24 @@ function buildSessionRuntime(
       for await (const piece of queue.drain()) {
         if (piece.kind === "thinking") {
           yield { role: "thinking", content: piece.text } as ChatMessage;
+        } else if (piece.kind === "toolCall") {
+          // Native structured tool call — the GUI renders it via toolCallState
+          // keyed by this stable id, so the card never jitters on updates.
+          yield {
+            role: "assistant",
+            content: "",
+            toolCalls: [piece.toolCall],
+            metadata: { deepAgentToolCall: true },
+          } as ChatMessage;
+        } else if (piece.kind === "toolResult") {
+          // Same toolCallId → GUI updates the existing card in place (done +
+          // output), and `deepAgentTool` tells it NOT to re-execute the tool.
+          yield {
+            role: "tool",
+            content: piece.content,
+            toolCallId: piece.toolCallId,
+            metadata: { deepAgentTool: true },
+          } as ChatMessage;
         } else {
           yield { role: "assistant", content: piece.text };
         }
@@ -844,6 +933,7 @@ export function wrapWithDeepAgent(
   underlying: ILLM,
   rootOverride: string | undefined,
   onInvoke?: () => void,
+  getConfig?: () => Promise<ContinueConfig | undefined>,
 ): ILLM {
   // Clone the model: inherit its prototype (all methods) and copy its own
   // instance fields (title, provider, options, capabilities, ...).
@@ -853,6 +943,7 @@ export function wrapWithDeepAgent(
   wrapper.__original = underlying;
 
   const runtimes = new Map<string, SessionRuntime>();
+  const runtimePromises = new Map<string, Promise<SessionRuntime>>();
   const DEFAULT_SESSION_ID = "__default__";
 
   wrapper.streamChat = async function* (
@@ -867,13 +958,22 @@ export function wrapWithDeepAgent(
       DEFAULT_SESSION_ID;
     let runtime = runtimes.get(sessionId);
     if (!runtime) {
-      runtime = buildSessionRuntime(
-        underlying,
-        rootOverride,
-        sessionId,
-        onInvoke,
-      );
-      runtimes.set(sessionId, runtime);
+      let pending = runtimePromises.get(sessionId);
+      if (!pending) {
+        pending = buildSessionRuntime(
+          underlying,
+          rootOverride,
+          sessionId,
+          onInvoke,
+          getConfig,
+        ).then((built) => {
+          runtimes.set(sessionId, built);
+          runtimePromises.delete(sessionId);
+          return built;
+        });
+        runtimePromises.set(sessionId, pending);
+      }
+      runtime = await pending;
     }
     yield* runtime.streamChat(messages, signal, options, messageOptions);
   };

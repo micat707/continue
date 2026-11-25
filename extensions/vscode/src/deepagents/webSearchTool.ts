@@ -1,5 +1,5 @@
 /**
- * Kiro-aligned `remote_web_search` tool (display name in prose: web_search).
+ * Kiro-aligned `web_search` tool.
  *
  * Kiro's flow is "search first, then web_fetch to read a specific result", so
  * this tool's description points at `web_fetch`. Two backends:
@@ -8,7 +8,7 @@
  * If the Tavily key is absent or Tavily fails, we transparently fall back to
  * Bing so the tool never hard-fails just because of missing configuration.
  *
- * The tool schema exposes `query` only — matching Kiro, where `remote_web_search`
+ * The tool schema exposes `query` only — matching Kiro, where `web_search`
  * is a remote MCP tool whose server owns the result count / raw-content /
  * timeout policy. Those knobs are internal constants here, not model inputs.
  *
@@ -28,7 +28,7 @@ const BROWSER_UA =
 /**
  * Retrieval tuning lives in the implementation, NOT in the tool schema.
  *
- * Kiro's `remote_web_search` is a remote MCP tool whose server owns the
+ * Kiro's `web_search` is a remote MCP tool whose server owns the
  * result-count / raw-content / timeout policy — the model only ever supplies
  * `query`, and the client forwards `input` verbatim into `tools/call`. These
  * constants are our equivalent of that server-side policy.
@@ -172,7 +172,7 @@ async function tavilySearch(
 export function createWebSearchTools(): DynamicStructuredTool[] {
   return [
     new DynamicStructuredTool({
-      name: "remote_web_search",
+      name: "web_search",
       description: [
         "    WebSearch looks up information that is outside the model's training data or cannot be reliably inferred from the current codebase/context.",
         "    Tool perform basic compliance wrt content licensing and restriction.",

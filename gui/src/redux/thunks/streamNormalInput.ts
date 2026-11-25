@@ -46,6 +46,16 @@ import { preprocessToolCalls } from "./preprocessToolCallArgs";
 import { throttleChunkSave } from "./session";
 import { streamResponseAfterToolCall } from "./streamResponseAfterToolCall";
 
+/**
+ * DeepAgent executes its tools inside the agent run (IDE side) and only
+ * MIRRORS them to the GUI as structured `tool_call` messages. Their ids carry
+ * the `deepagent-` prefix. Never feed them through Continue's tool loop again:
+ * `user_input` would otherwise ask the user twice and hang the run.
+ */
+function isDeepAgentToolCall(toolCall: { toolCallId: string }): boolean {
+  return toolCall.toolCallId.startsWith("deepagent-");
+}
+
 // Per-stream sequence id, stamped on every request/response marker so that
 // concurrent LLM streams (parallel tool-call continuations) can be told apart
 // when debugging "stream interrupted by a concurrent request" issues: each
@@ -572,7 +582,9 @@ export const streamNormalInput = createAsyncThunk<
     if (streamAborter?.signal?.aborted) {
       return;
     }
-    const originalToolCalls = selectCurrentToolCalls(state1);
+    const originalToolCalls = selectCurrentToolCalls(state1).filter(
+      (tc) => !isDeepAgentToolCall(tc),
+    );
     const generatingCalls = originalToolCalls.filter(
       (tc) => tc.status === "generating",
     );
@@ -593,7 +605,9 @@ export const streamNormalInput = createAsyncThunk<
     if (streamAborter?.signal?.aborted) {
       return;
     }
-    const generatedCalls2 = selectPendingToolCalls(state2);
+    const generatedCalls2 = selectPendingToolCalls(state2).filter(
+      (tc) => !isDeepAgentToolCall(tc),
+    );
     await preprocessToolCalls(dispatch, extra.ideMessenger, generatedCalls2);
 
     // 3. Security check: evaluate updated policies based on args
@@ -601,7 +615,9 @@ export const streamNormalInput = createAsyncThunk<
     if (streamAborter?.signal?.aborted) {
       return;
     }
-    const generatedCalls3 = selectPendingToolCalls(state3);
+    const generatedCalls3 = selectPendingToolCalls(state3).filter(
+      (tc) => !isDeepAgentToolCall(tc),
+    );
     const toolPolicies = state3.ui.toolSettings;
     const policies = await evaluateToolPolicies(
       dispatch,
@@ -659,7 +675,9 @@ export const streamNormalInput = createAsyncThunk<
     } else {
       // auto stream cases increase thunk depth by 1 for debugging
       const state4 = getState();
-      const generatedCalls4 = selectPendingToolCalls(state4);
+      const generatedCalls4 = selectPendingToolCalls(state4).filter(
+        (tc) => !isDeepAgentToolCall(tc),
+      );
       if (streamAborter?.signal?.aborted) {
         return;
       }

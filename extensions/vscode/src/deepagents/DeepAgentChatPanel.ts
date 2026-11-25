@@ -239,7 +239,7 @@ export class DeepAgentChatPanel {
         }),
       // Background process management tools (control_process / get_process_output /
       // list_processes) — mirror Kiro so dev servers etc. run without blocking.
-      // remote_web_search + web_fetch mirror Kiro's search-then-read web workflow.
+      // web_search + web_fetch mirror Kiro's search-then-read web workflow.
       tools: createDeepAgentTools({
         surface: "webview",
         sessionId: "deepagent-chat-panel",

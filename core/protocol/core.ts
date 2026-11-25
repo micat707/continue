@@ -338,6 +338,15 @@ export type ToCoreFromIdeOrWebviewProtocol = {
       errorMessage?: string;
     },
   ];
+  /**
+   * GUI → IDE: mirror the GUI Tools-page policies to the IDE so the DeepAgent
+   * harness uses the SAME per-tool decisions (GUI is the single source of
+   * truth). Fire-and-forget; no response needed.
+   */
+  "deepAgent/syncToolSettings": [
+    { toolSettings: Record<string, ToolPolicy> },
+    void,
+  ];
   "clipboardCache/add": [{ content: string }, void];
   isItemTooBig: [{ item: ContextItemWithId }, boolean];
   "process/markAsBackgrounded": [{ toolCallId: string }, void];

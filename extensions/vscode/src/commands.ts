@@ -76,6 +76,10 @@ let deepAgentEnabled = false;
  */
 let deepAgentRoot: string | undefined;
 
+// Used to feed the latest MCP server config into the DeepAgent tool catalogue.
+// Set once in registerCommands; MCP tools then run inside the DeepAgent loop.
+let deepAgentConfigHandler: ConfigHandler | undefined;
+
 // Status bar = always-visible proof of which engine the main chat will use.
 let deepAgentStatusBar: vscode.StatusBarItem | undefined;
 let deepAgentLastTurnAt: number | undefined;
@@ -126,7 +130,17 @@ function applyDeepAgentWrap(config: any) {
 
   if (deepAgentEnabled && chat) {
     if (!(chat as any).__deepAgent) {
-      const wrapped = wrapWithDeepAgent(chat, deepAgentRoot, markDeepAgentTurn);
+      const wrapped = wrapWithDeepAgent(
+        chat,
+        deepAgentRoot,
+        markDeepAgentTurn,
+        deepAgentConfigHandler
+          ? async () => {
+              const { config } = await deepAgentConfigHandler!.loadConfig();
+              return config as any;
+            }
+          : undefined,
+      );
       config.selectedModelByRole.chat = wrapped;
       if (arr) {
         const i = arr.findIndex((m) => m.title === chat.title);
@@ -256,6 +270,10 @@ const getCommandsMap: (
       artifacts,
     });
   });
+
+  // MCP tools for DeepAgent: expose the config source to the wrapped model so
+  // MCP servers become part of the DeepAgent tool catalogue.
+  deepAgentConfigHandler = configHandler;
 
   // DeepAgent engine mode: wrap the selected chat model on every (re)load so the
   // main chat is driven by DeepAgent while the model selector stays unchanged.

@@ -650,6 +650,34 @@ export const sessionSlice = createSlice({
             ? renderChatMessage(message)
             : "";
 
+          // DeepAgent mirrors tools it already executed inside the agent run
+          // as `role: "tool"` + `metadata.deepAgentTool`. Fold the result into
+          // the EXISTING toolCallState (Kiro's toolCallUpdate semantics) and
+          // skip the generic tool history item — creating a second item is
+          // what makes the answered card appear to jump.
+          if (
+            message.role === "tool" &&
+            message.metadata?.deepAgentTool &&
+            message.toolCallId
+          ) {
+            const toolCallState = findToolCallById(
+              state.history,
+              message.toolCallId,
+            );
+            if (toolCallState) {
+              toolCallState.status = "done";
+              toolCallState.output = [
+                {
+                  name: toolCallState.toolCall.function.name,
+                  description: "Tool result",
+                  content: messageContent,
+                  hidden: false,
+                },
+              ];
+            }
+            continue;
+          }
+
           // OpenAI-compatible models in agent mode sometimes send
           // all of their data in one message, so we handle that case early.
           if (messageContent && message.role !== "tool") {
