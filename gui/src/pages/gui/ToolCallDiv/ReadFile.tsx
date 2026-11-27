@@ -1,30 +1,30 @@
 import { ToolCallState } from "core";
-import { getMarkdownLanguageTagForFile } from "core/util";
 import { renderContextItems } from "core/util/messageContent";
 import { getUriPathBasename } from "core/util/uri";
-import { useContext, useState } from "react";
+import { useContext } from "react";
 import { IdeMessengerContext } from "../../../context/IdeMessenger";
-import StyledMarkdownPreview from "../../../components/StyledMarkdownPreview";
-import { ChevronDownIcon, EyeIcon, FileIcon } from "./OutcomeIcons";
+import { EyeIcon, FileIcon } from "./OutcomeIcons";
+import { getKiroToolStatusClass, isKiroToolInProgress } from "./utils";
 
 interface ReadFileToolCallProps {
   toolCallState: ToolCallState;
   historyIndex: number;
 }
 
+interface ReadRange {
+  start: number;
+  end: number;
+}
+
 /**
  * Kiro-style agent-outcome card for `read_file` (mirrors kiro-ui-agent-chat's
- * Read File outcome): a summary row with an eye status glyph + "Read File"
- * title + a clickable file-label pill. The file content is tucked into a
- * collapsible "Details" row so the read text stays available inline without
- * cluttering the chat when collapsed.
+ * ReadToolCall): a summary row with an eye status glyph + "Read File" title +
+ * a clickable file-label pill + the compact "L566-695" range badge. Kiro's read
+ * card never renders Details; the file content stays in the tool result and
+ * markdown history instead.
  */
-export function ReadFile({
-  toolCallState,
-  historyIndex,
-}: ReadFileToolCallProps) {
+export function ReadFile({ toolCallState }: ReadFileToolCallProps) {
   const ideMessenger = useContext(IdeMessengerContext);
-  const [showContent, setShowContent] = useState(false);
 
   const args = (toolCallState.parsedArgs ?? {}) as Record<string, unknown>;
   const filePath: string =
@@ -34,69 +34,59 @@ export function ReadFile({
   if (!filePath) return null;
 
   const displayName = getUriPathBasename(filePath) || filePath;
-  const isDone = toolCallState.status === "done";
+  const statusClass = getKiroToolStatusClass(toolCallState.status);
+  const inProgress = isKiroToolInProgress(toolCallState.status);
 
-  const output = toolCallState.output;
-  const content =
-    typeof output === "string"
-      ? output
-      : output && output.length > 0
-        ? renderContextItems(output)
-        : "";
+  const outputText =
+    typeof toolCallState.output === "string"
+      ? toolCallState.output
+      : renderContextItems(toolCallState.output ?? []);
+  const range = extractReadRange(outputText);
 
-  const fileLabel = (
-    <button
-      type="button"
-      className="file-label"
-      title={filePath}
-      onClick={(e) => {
-        e.stopPropagation();
-        ideMessenger.post("openFile", { path: filePath });
-      }}
-    >
-      <FileIcon />
-      <span className="file-label-name">{displayName}</span>
-    </button>
-  );
+  const openFile = () => {
+    ideMessenger.post("openFile", { path: filePath });
+  };
 
   return (
     <div className="agent-outcome">
       <div className="agent-outcome-summary">
-        <span
-          className={`agent-outcome-status ${
-            isDone ? "agent-icon-accepted" : "agent-icon-pending"
-          }`}
-        >
-          <EyeIcon />
+        <span className={`agent-outcome-status ${statusClass}`}>
+          {inProgress ? (
+            <i className="kiro-icon codicon codicon-loading" />
+          ) : (
+            <EyeIcon />
+          )}
         </span>
         <span className="tool-call-title">Read File</span>
-        {fileLabel}
-      </div>
-      {content && (
-        <div className="kiro-inline-diff">
-          <button
-            type="button"
-            className="kiro-inline-diff-header"
-            data-testid="toggle-read-file-content"
-            onClick={() => setShowContent(!showContent)}
+        <button
+          type="button"
+          className="file-label"
+          title={filePath}
+          onClick={(e) => {
+            e.stopPropagation();
+            openFile();
+          }}
+        >
+          <FileIcon />
+          <span className="file-label-name">{displayName}</span>
+        </button>
+        {range && (
+          <span
+            className="cursor-pointer font-mono text-[11px] opacity-60 hover:opacity-100"
+            title={`${range.start}-${range.end} 行`}
+            onClick={openFile}
           >
-            <ChevronDownIcon className={showContent ? "expanded" : ""} />
-            <span className="kiro-inline-diff-title">Details</span>
-          </button>
-          {showContent && (
-            <div className="agent-outcome-details">
-              <StyledMarkdownPreview
-                isRenderingInStepContainer
-                disableManualApply
-                source={`\`\`\`${getMarkdownLanguageTagForFile(
-                  filePath,
-                )} ${filePath}\n${content}\n\`\`\``}
-                itemIndex={historyIndex}
-              />
-            </div>
-          )}
-        </div>
-      )}
+            L{range.start}-{range.end}
+          </span>
+        )}
+      </div>
     </div>
   );
+}
+
+function extractReadRange(output: string): ReadRange | undefined {
+  const match = /@@ lines (\d+)-(\d+)(?: of \d+)?(?: \|[^@\n]*)? @@/.exec(
+    output,
+  );
+  return match ? { start: Number(match[1]), end: Number(match[2]) } : undefined;
 }

@@ -295,6 +295,18 @@ declare global {
   
   export type MessageContent = string | MessagePart[];
   
+  export interface ToolCallMetaKiro {
+    agentSubtaskId?: string;
+    kind?: string;
+    toolId?: string;
+    title?: string;
+    [key: string]: unknown;
+  }
+  export interface ToolCallMeta {
+    kiro?: ToolCallMetaKiro;
+    [key: string]: unknown;
+  }
+
   export interface ToolCall {
     id: string;
     type: "function";
@@ -302,8 +314,9 @@ declare global {
       name: string;
       arguments: string;
     };
+    _meta?: ToolCallMeta;
   }
-  
+
   export interface ToolCallDelta {
     id?: string;
     type?: "function";
@@ -311,6 +324,7 @@ declare global {
       name?: string;
       arguments?: string;
     };
+    _meta?: ToolCallMeta;
   }
   
   export interface ToolResultChatMessage {
@@ -406,6 +420,7 @@ declare global {
     status: ToolStatus;
     parsedArgs: any;
     output?: ContextItem[];
+    _meta?: ToolCallMeta;
   }
   
   export interface ChatHistoryItem {

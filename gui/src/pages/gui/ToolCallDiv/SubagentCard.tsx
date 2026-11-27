@@ -1,7 +1,9 @@
 import { ToolCallState } from "core";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GenericToolCallCard } from "./GenericToolCallCard";
 import { GroupedToolCallHeader } from "./GroupedToolCallHeader";
+import { UserInputCard } from "./UserInputCard";
+import { getKiroToolStatusClass, isKiroToolInProgress } from "./utils";
 
 interface SubagentCardProps {
   toolCallState: ToolCallState;
@@ -76,12 +78,11 @@ function parseEnvelope(content: string): SubagentEnvelope | undefined {
  * we carry them in a JSON envelope on the native toolResult instead.
  */
 export function SubagentCard({ toolCallState }: SubagentCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [groupOpen, setGroupOpen] = useState(true);
-
   const content = toolCallState.output?.[0]?.content ?? "";
   const envelope = parseEnvelope(content);
   const isDone = toolCallState.status === "done";
+  const statusClass = getKiroToolStatusClass(toolCallState.status);
+  const inProgress = isKiroToolInProgress(toolCallState.status);
   const name =
     envelope?.name ??
     (typeof toolCallState.parsedArgs?.name === "string"
@@ -90,17 +91,25 @@ export function SubagentCard({ toolCallState }: SubagentCardProps) {
   const children = envelope?.children ?? [];
   const running = !isDone && children.length > 0;
 
+  const [expanded, setExpanded] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(running);
+  const userToggledGroup = useRef(false);
+  useEffect(() => {
+    if (userToggledGroup.current) return;
+    setGroupOpen(running);
+  }, [running]);
+
   // Plain-text result (old session or envelope parse failed): show it inline.
   if (!envelope) {
     return (
       <div className="agent-outcome">
         <div className="agent-outcome-summary">
-          <span
-            className={`agent-outcome-status ${
-              isDone ? "agent-icon-accepted" : "agent-icon-running"
-            }`}
-          >
-            <i className="kiro-icon codicon codicon-eye" />
+          <span className={`agent-outcome-status ${statusClass}`}>
+            <i
+              className={`kiro-icon codicon ${
+                inProgress ? "codicon-loading" : "codicon-eye"
+              }`}
+            />
           </span>
           <span className="tool-call-title">Sub-agent: {name}</span>
         </div>
@@ -122,12 +131,12 @@ export function SubagentCard({ toolCallState }: SubagentCardProps) {
         onClick={() => setExpanded(!expanded)}
         title="Toggle sub-agent tools"
       >
-        <span
-          className={`agent-outcome-status ${
-            isDone ? "agent-icon-accepted" : "agent-icon-running"
-          }`}
-        >
-          <i className="kiro-icon codicon codicon-eye" />
+        <span className={`agent-outcome-status ${statusClass}`}>
+          <i
+            className={`kiro-icon codicon ${
+              inProgress ? "codicon-loading" : "codicon-eye"
+            }`}
+          />
         </span>
         <span className="tool-call-title">Sub-agent: {name}</span>
         {children.length > 0 && (
@@ -157,7 +166,10 @@ export function SubagentCard({ toolCallState }: SubagentCardProps) {
                 )}
                 open={groupOpen}
                 running={running}
-                onToggle={() => setGroupOpen(!groupOpen)}
+                onToggle={() => {
+                  userToggledGroup.current = true;
+                  setGroupOpen(!groupOpen);
+                }}
               />
               <div
                 className="collapsible-content-wrapper"
@@ -168,6 +180,18 @@ export function SubagentCard({ toolCallState }: SubagentCardProps) {
                   {children.map((child, i) => {
                     const uid = `${toolCallState.toolCallId}-child-${i}`;
                     const state = childToState(child, uid);
+                    if (child.name === "user_input") {
+                      // Sub-agent `user_input` executes inside the child graph
+                      // and posts `userInputRequested` to the GUI. Only
+                      // UserInputCard listens for that event and renders the
+                      // interactive question; a generic card would strand the
+                      // question and leave the sub-agent waiting forever.
+                      return (
+                        <div className="py-1" key={uid}>
+                          <UserInputCard toolCallState={state} />
+                        </div>
+                      );
+                    }
                     if (child.name.startsWith("sub-agent:")) {
                       // Nested delegation: synthesize an envelope state so
                       // SubagentCard can recurse (Kiro supports infinite depth).
@@ -193,10 +217,16 @@ export function SubagentCard({ toolCallState }: SubagentCardProps) {
                           },
                         ],
                       } as ToolCallState;
-                      return <SubagentCard key={uid} toolCallState={nested} />;
+                      return (
+                        <div className="py-1" key={uid}>
+                          <SubagentCard toolCallState={nested} />
+                        </div>
+                      );
                     }
                     return (
-                      <GenericToolCallCard key={uid} toolCallState={state} />
+                      <div className="py-1" key={uid}>
+                        <GenericToolCallCard toolCallState={state} />
+                      </div>
                     );
                   })}
                 </div>

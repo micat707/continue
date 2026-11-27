@@ -24,7 +24,16 @@
 import { randomUUID } from "crypto";
 import type { VsCodeWebviewProtocol } from "../webviewProtocol";
 
-export type HitlDecision = { id: string; type: "approve" | "reject" };
+export type HitlDecision = {
+  id: string;
+  type: "approve" | "reject";
+  /** Kiro-style scope selector from the permission confirm stage. */
+  scope?: "session" | "workspace" | "user";
+  /** Kiro-style path pattern: exact path, parent directory, or all (`**`). */
+  pathPattern?: "full" | "parent" | "all";
+  /** Directory (or `**`) that should be remembered as trusted. */
+  trustedDir?: string;
+};
 
 let protocol: VsCodeWebviewProtocol | null = null;
 

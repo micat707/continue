@@ -113,6 +113,8 @@ export function normalizePath(p: string): string {
 export function isInsideDir(path: string, dir: string): boolean {
   const n = normalizePath(path);
   const d = normalizePath(dir);
+  // Kiro's `**` path pattern: the user explicitly trusted every path.
+  if (d === "**") return true;
   return n === d || n.startsWith(d + "/");
 }
 

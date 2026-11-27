@@ -21,6 +21,7 @@ import { createDeepAgent, type DeepAgent } from "deepagents";
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 
 import { ContinueLLMAdapter } from "./ContinueLLMAdapter";
+import { NATIVE_TOOL_CALL_RULE } from "./promptRules";
 import {
   approvePath,
   buildWorkspaceContext,
@@ -52,6 +53,7 @@ import {
   formatToolOutput,
   truncate,
 } from "./toolFormat";
+import { createToolNameTransformer } from "./toolNameTransformer";
 import {
   mergeRules,
   resolveExecuteAction,
@@ -222,8 +224,8 @@ export class DeepAgentChatPanel {
 
     this.agent = createDeepAgent({
       model: adapter,
-      systemPrompt:
-        "You are a helpful coding assistant. Use the filesystem tools when needed.",
+      systemPrompt: `${NATIVE_TOOL_CALL_RULE}
+You are a helpful coding assistant. Use the filesystem tools when needed.`,
       // Factory runs on every agent turn and reads the live workspace folders,
       // so adding a folder in Explorer takes effect on the next message.
       // The approval wrapper lets through paths the user approved on the
@@ -263,6 +265,8 @@ export class DeepAgentChatPanel {
         },
       }),
       checkpointer: new MemorySaver(),
+      // Kiro-aligned authoritative tool name from tool-started (on_tool_start).
+      streamTransformers: [createToolNameTransformer],
       interruptOn,
       // Kiro's invoke_sub_agent: expose the 5 preset agents and let contextFiles
       // resolve against this panel's workspace layout. spec-task-execution is
@@ -467,7 +471,48 @@ export class DeepAgentChatPanel {
     this.panel.webview.postMessage({ type: "runStart" });
     this.panel.webview.postMessage({ type: "assistantStart" });
 
-    await Promise.all([this.streamMessages(run), this.streamToolCalls(run)]);
+    // Kiro-aligned: drain the authoritative tool-name channel concurrently
+    // with the other streams (all read the same event buffer).
+    const authoritativeNames = new Map<string, string>();
+    const nameWaiters = new Map<
+      string,
+      { promise: Promise<string>; resolve: (name: string) => void }
+    >();
+    const waitForName = (callId: string): Promise<string> => {
+      const existing = authoritativeNames.get(callId);
+      if (existing) return Promise.resolve(existing);
+      let resolve!: (name: string) => void;
+      const promise = new Promise<string>((r) => (resolve = r));
+      nameWaiters.set(callId, { promise, resolve });
+      return promise;
+    };
+    const namesProducer = (async () => {
+      try {
+        const channel = (run as any)?.extensions?.toolNames as
+          | AsyncIterable<{ callId: string; name: string }>
+          | undefined;
+        if (!channel) return;
+        for await (const entry of channel) {
+          if (entry?.callId && entry?.name) {
+            authoritativeNames.set(entry.callId, entry.name);
+            const waiter = nameWaiters.get(entry.callId);
+            if (waiter) {
+              waiter.resolve(entry.name);
+              nameWaiters.delete(entry.callId);
+            }
+          }
+        }
+      } finally {
+        for (const waiter of nameWaiters.values()) waiter.resolve("");
+        nameWaiters.clear();
+      }
+    })();
+
+    await Promise.all([
+      this.streamMessages(run),
+      this.streamToolCalls(run, waitForName),
+      namesProducer,
+    ]);
 
     const interrupted =
       Boolean(run.interrupted) || (run.interrupts?.length ?? 0) > 0;
@@ -572,16 +617,25 @@ export class DeepAgentChatPanel {
   }
 
   /** Stream tool start/end cards into the webview. */
-  private async streamToolCalls(run: any) {
+  private async streamToolCalls(
+    run: any,
+    waitForName: (callId: string) => Promise<string>,
+  ) {
     let seq = 0;
     for await (const call of run.toolCalls ?? []) {
       try {
         // Key every card by the tool call id. Concurrent calls must not have
         // their start/end events crossed (the old __lastTool did exactly that).
         const id = String(call.id ?? `tool-${++seq}`);
-        const name = call.name ?? "tool";
         const rawInput = await call.input;
         const input = formatToolInput(rawInput);
+        // Authoritative name from tool-started (Kiro on_tool_start); never
+        // guess from input shape. Raw name is the last-resort verbatim value.
+        const authoritative = await Promise.race([
+          waitForName(id),
+          new Promise<string>((r) => setTimeout(() => r(""), 400)),
+        ]);
+        const name = authoritative || String(call.name ?? "tool");
         const inputObj = rawInput as Record<string, unknown> | undefined;
         const filePath =
           rawInput && typeof rawInput === "object" && inputObj

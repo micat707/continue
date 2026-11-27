@@ -239,6 +239,19 @@ export type ToWebviewFromIdeProtocol = ToWebviewFromIdeOrCoreProtocol & {
         subOptions?: Array<{ title: string; description?: string }>;
         subOptionsLabel?: string;
       }>;
+      /** Multi-question intake: several questions in ONE scrollable card. */
+      questions?: Array<{
+        question: string;
+        options: Array<{
+          title: string;
+          description?: string;
+          recommended?: boolean;
+          subOptions?: Array<{ title: string; description?: string }>;
+          subOptionsLabel?: string;
+        }>;
+        /** Allow selecting more than one option for this question. */
+        multiple?: boolean;
+      }>;
       reason?: string;
     },
     void,

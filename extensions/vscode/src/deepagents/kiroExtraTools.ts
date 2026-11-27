@@ -565,8 +565,8 @@ Parameters:
   - image — a raster image (png/jpg/gif/webp). Requires sourcePath.
   - pdf — a PDF document. Requires sourcePath.
   - office — a Word/Excel/PowerPoint file. Requires sourcePath.
-- content: The artifact's text. Required for markdown, svg, mermaid, html, and code.
-- sourcePath: Absolute path to an existing file to adopt instead of inline text. Required for image, pdf, and office.
+- content: The artifact's text for markdown, svg, mermaid, html, and code. Optional if sourcePath is given.
+- sourcePath: Absolute path to an existing file to adopt instead of inline text. Required for image, pdf, and office; ALSO recommended for LARGE markdown/code documents (e.g. spec files) — write the file first with a file-write tool, then pass its path here so the content does not have to fit in this tool call's token budget and risk truncation.
 - format: Optional hint. For code, the highlight language (e.g. "typescript", "python"). For binaries, the file extension (e.g. "png", "docx").
 
 Returns the artifact id and a reference URL.
@@ -603,13 +603,13 @@ Notes:
         .string()
         .optional()
         .describe(
-          "The artifact text. Required for markdown, svg, mermaid, html, and code.",
+          "The artifact text for markdown, svg, mermaid, html, and code. Optional if sourcePath is provided.",
         ),
       sourcePath: z
         .string()
         .optional()
         .describe(
-          "Absolute path to an existing file to adopt. Required for image, pdf, and office.",
+          "Absolute path to an existing file to adopt. Required for image, pdf, and office; recommended for large markdown/code specs (write the file first, then pass its path).",
         ),
       format: z
         .string()
@@ -624,8 +624,15 @@ Notes:
       if (binaryKinds.includes(input.kind) && !input.sourcePath) {
         return `${input.kind} artifacts require sourcePath`;
       }
-      if (inlineKinds.includes(input.kind) && !input.content) {
-        return `${input.kind} artifacts require content`;
+      // Inline kinds accept EITHER inline content OR sourcePath (a file written
+      // first, e.g. a long spec doc that would blow the tool-call token budget
+      // if embedded as a JSON string).
+      if (
+        inlineKinds.includes(input.kind) &&
+        !input.content &&
+        !input.sourcePath
+      ) {
+        return `${input.kind} artifacts require content or sourcePath`;
       }
       let payload: ArtifactPayload;
       if (deps.artifactWriter && deps.sessionId) {

@@ -56,56 +56,112 @@ const SPEC_ONLY_TOOLS = new Set(["taskList", "taskGet", "taskUpdate"]);
 export const SPEC_GENERATION_PROMPT = `# Specification Workflow (generation phase)
 
 You are in SPEC WORKFLOW. The user asked for a complex change that should be
-specified before implementation. Follow this process strictly:
+specified before implementation.
 
-## 1. Clarify first — ALWAYS call the \`user_input\` tool
-Before writing any document, identify requirements that are ambiguous or
-require a user decision (scope, tech choices, UI behaviour, edge cases).
+## Implicit rules (always in force during this phase)
+- Focus on creating a new spec file, or identifying an existing spec to update.
+- If starting a NEW spec, FIRST present the entry-point choice to the user with
+  \`user_input\`, then delegate the spec documents to the requirements-first
+  sub-agent. Do NOT create any spec file before the user has chosen the entry
+  point.
+- Keep ALL clarifying questions together in ONE place — see §1. A scattered
+  series of "one question per turn" cards is explicitly discouraged.
 
-You MUST ask EVERY clarifying question by CALLING the \`user_input\` tool.
-The GUI renders that tool as an interactive card with selectable options,
-sub-options and a free-text box. It is the ONLY way the user can answer you
-during this phase: the user will be forced to answer or skip the question to
-proceed, and the answer comes back INSIDE the tool result.
+Follow this process strictly:
 
-DO NOT proceed to the next topic or write any document until the user's answer
-comes back. NEVER write clarifying questions as plain chat text, markdown
-\`- [ ]\` checkboxes, emoji checkmarks (✅), or Markdown tables — those are NOT
-interactive and the user cannot tick them.
+## 1. Clarify first — ONE \`user_input\` card, NON-CONFLICTING questions together
+Before delegating, identify everything ambiguous or needing a user decision.
+Put them in ONE \`user_input\` call using the \`questions\` array — the GUI
+renders one scrollable card, each question with its own options and answer box;
+the user answers in one go.
 
-Call \`user_input\` ONCE PER TOPIC (e.g. one call for core features, one for the
-desktop framework, one for the media SDK, one for target platforms). For each
-call:
-- Format \`question\` in markdown bold (**...**) so it stands out.
-- You MUST always pass 2-5 choices in the \`options\` array for every clarifying
-  question. NEVER omit \`options\`: a call without options renders an empty card
-  with no selectable choices and the user cannot answer efficiently. Even for
-  open questions, offer options such as sensible defaults plus "Other".
-- Use **concise options only** — put longer explanations in the option's
-  \`description\` field, not the title.
-- Mark one option as \`recommended\` based on your analysis.
-- Use \`subOptions\` when several toggles can be picked under one choice.
+CRITICAL — mutually exclusive questions:
+If some questions only make sense for CERTAIN answers of an earlier question
+(e.g. "core features / target platforms" only for a new feature, but "what is
+the bug" only for a bugfix), they are MUTUALLY EXCLUSIVE — do NOT put them in
+the SAME card as independent questions. Instead:
+  - Batch 1: ask ONLY the branching question (e.g. "Where should this spec
+    start?"). One question in this card is fine when it is a branch point.
+  - After the answer arrives, Batch 2: ask the 2-4 follow-up questions that
+    apply to the chosen branch, all together in ONE card.
+This is the ONLY case where two user_input cards are acceptable. Never split
+compatible questions across turns, and never mix mutually-exclusive branches
+into one card.
 
-Example of a correct call:
-
+Call shape — ALWAYS use the \`questions\` array below, even if you think only
+one thing is ambiguous; put every decision you can think of in it. NEVER use
+the old single-question form (\`question\` + \`options\` only) — it causes
+"ask one, answer, then ask another" which is forbidden:
 \`\`\`json
 {
-  "question": "**Which desktop framework should we use?**",
-  "options": [
-    { "title": "Electron", "description": "JS/TS, fast to build, larger bundle", "recommended": true },
-    { "title": "Tauri", "description": "Rust backend, small bundle, better performance" }
+  "question": "**Confirm the spec setup**",
+  "questions": [
+    {
+      "question": "**Where should this spec start?**",
+      "options": [
+        { "title": "Start with Requirements", "description": "Business needs drive the design (recommended for a new feature)", "recommended": true },
+        { "title": "Start with Design", "description": "Technical design is already decided" },
+        { "title": "Fix a Bug", "description": "Bugfix spec workflow" }
+      ]
+    },
+    {
+      "question": "**Which core features?** (multi-select)",
+      "multiple": true,
+      "options": [
+        { "title": "Screen sharing", "description": "Share desktop or a window" },
+        { "title": "Remote desktop control", "description": "Control another participant's machine" },
+        { "title": "Meeting recording", "description": "Record sessions to disk" }
+      ]
+    },
+    {
+      "question": "**Target platforms?**",
+      "options": [
+        { "title": "Windows + macOS + Linux", "recommended": true },
+        { "title": "Windows only" },
+        { "title": "macOS only" }
+      ]
+    }
   ]
 }
 \`\`\`
+Put 2-4 MUTUALLY COMPATIBLE questions in the array — only decisions that are
+genuinely ambiguous and can all be answered together. Do NOT force unrelated
+or mutually-exclusive questions into the batch (see the CRITICAL rule above).
+Even if the user already stated a preference, include it as a question with
+that option marked \`recommended\` so the user can confirm. Every item MUST
+have a \`question\` and 2-5 \`options\`. Set \`multiple: true\` for multi-select.
+Use concise option titles with detail in \`description\`, mark a \`recommended\`
+option. Options are shown with A/B/C labels. The old single-question form
+(\`question\` + \`options\` only) is acceptable ONLY for a pure branch point as
+described above.
 
-Only after the tool answers have resolved all ambiguities, summarise them
-briefly and move on to generating the documents. If nothing is ambiguous,
-state that briefly and continue without calling the tool.
+- NEVER write clarifying questions as plain chat text, markdown \`- [ ]\`
+  checkboxes, emoji checkmarks (✅), or Markdown tables — those are NOT
+  interactive and the user cannot tick them.
+- NEVER ask trivia one question per turn. One card with \`questions\` is the
+  rule for all compatible questions. A SECOND card is allowed ONLY for
+  follow-ups that cannot be predicted until the branching answer arrives.
 
-## 2. Generate the spec documents
-Write three documents under the spec's directory (the user will tell you the
-feature name; default to \`.kiro/specs/<feature-name>/\`):
+Only after the single card is answered, summarise the decisions in one brief
+sentence and continue. You may skip the card ONLY if the user EXPLICITLY said
+"don't ask, just start / go ahead without questions"; otherwise you MUST ask
+the batched card — deciding "only one thing is unclear" or "nothing is
+unclear" is NOT a valid reason to split or skip.
 
+## 2. Delegate document generation to the requirements-first sub-agent
+Do NOT write the three documents yourself. Make ONE native tool call to
+\`invoke_sub_agent\` with \`name='feature-requirements-first-workflow'\` and pass
+the user's answers from §1 in the \`prompt\`. CRITICAL: issue the call through
+the native tool-call channel — NEVER write tool calls as text/XML tags such as
+\`<tool_call>\`, \`<variable_name>...\`, \`<function=NAME>\` or numbered variants
+like \`invoke_sub_agent2\`; those are not executable and render as garbage.
+Do NOT try to dispatch several sub-agents in parallel here — a SINGLE
+\`invoke_sub_agent\` call generates all needed spec documents.
+Set \`preset\` to the chosen phase: "requirements" for Start with Requirements,
+"design" for Start with Design, or omit it to let the sub-agent continue with
+the next missing document.
+
+The sub-agent creates, under \`.kiro/specs/<feature-name>/\`:
 - \`requirements.md\` — EARS-style acceptance criteria, one requirement per
   \`### Requirement\` with \`#### Acceptance Criteria\` (WHEN/THEN/SHALL).
 - \`design.md\` — architecture and key decisions, with concrete file paths and
@@ -114,20 +170,23 @@ feature name; default to \`.kiro/specs/<feature-name>/\`):
   checkbox \`- [ ] 1. ...\`; nest sub-tasks under their parent task. Tasks must
   be small, independently verifiable, and cover requirements + design.
 
+You may use \`read_file\` / \`grep_search\` / \`file_search\` / \`list_directory\`
+to gather context for the prompt. To validate a document the sub-agent wrote,
+use \`validate_spec_format\`; do not hand-edit the documents.
+
 ## 3. Confirm before executing
-After writing the documents, summarise them and ask the user to confirm before
-any implementation begins. To start implementation, the user will ask to run
-the tasks (e.g. "run all tasks") — you will then be switched to the task
-execution orchestrator.
+After the sub-agent reports the documents, summarise them and ask the user to
+confirm before any implementation begins. To start implementation, the user
+will ask to run the tasks (e.g. "run all tasks") — you will then be switched to
+the task execution orchestrator.
 
 ## Rules
 - Do NOT write production code or run builds/tests in this phase. Your job is
-  only to clarify and to produce the three spec documents.
-- Use the filesystem tools to create the documents. Use \`read_file\` /
-  \`grep_search\` / \`file_search\` / \`list_directory\` to ground the spec in the
-  real codebase.
+  only to clarify (one card), delegate to the sub-agent, and report results.
+- ALL spec document writing is done by the \`feature-requirements-first-workflow\`
+  sub-agent via \`invoke_sub_agent\`. Do NOT write the .md files yourself.
 - The \`taskList\` / \`taskGet\` / \`taskUpdate\` tools are available for reading
-  and maintaining the task list you generated.`;
+  and maintaining the task list.`;
 
 export interface SpecWorkflowOptions {
   /** Prompt + tool whitelist used for "run existing tasks" (orchestrator). */

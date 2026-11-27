@@ -39,6 +39,7 @@ export interface StepContainerPreToolbarProps {
   expanded?: boolean;
   disableManualApply?: boolean;
   collapsible?: boolean;
+  plainTextDisplay?: boolean;
 }
 
 export function StepContainerPreToolbar({
@@ -56,6 +57,7 @@ export function StepContainerPreToolbar({
   expanded,
   disableManualApply,
   collapsible,
+  plainTextDisplay,
 }: StepContainerPreToolbarProps) {
   const ideMessenger = useContext(IdeMessengerContext);
   const history = useAppSelector((state) => selectActiveSession(state).history);
@@ -254,6 +256,12 @@ export function StepContainerPreToolbar({
   const renderActionButtons = () => {
     const isPendingToolCall = toolCallApplyState?.status === "not-started";
 
+    // Plain text blocks (bare fences / ```text) are read-only displays —
+    // never offer Run / Apply / CreateFile for echoed file content.
+    if (plainTextDisplay) {
+      return null;
+    }
+
     if (isGeneratingCodeBlock || isPendingToolCall) {
       const numLines = codeBlockContent.split("\n").length;
       const plural = numLines === 1 ? "" : "s";
@@ -303,21 +311,63 @@ export function StepContainerPreToolbar({
     return children;
   }
 
+  // Kiro-style code block: a padded, rounded container with the language on
+  // its own header row and the copy action floating on the right. Mirrors
+  // Kiro's `my-4 flex w-full flex-col gap-2 rounded-xl border border-border
+  // bg-sidebar p-2` markup so plain markdown fences look identical.
+  if (plainTextDisplay) {
+    return (
+      <div
+        className="kiro-code-block"
+        data-language={language ?? undefined}
+        data-streamdown="code-block"
+      >
+        <div
+          className="kiro-code-block-header"
+          data-language={language ?? undefined}
+        >
+          <span className="kiro-code-block-lang">{language}</span>
+        </div>
+        {!isGeneratingCodeBlock && (
+          <div className="kiro-code-block-actions-row">
+            <div className="kiro-code-block-actions">
+              <CopyButton text={codeBlockContent} />
+            </div>
+          </div>
+        )}
+        <div
+          className={`kiro-code-block-body ${
+            language ? `language-${language}` : ""
+          }`}
+          data-streamdown="code-block-body"
+        >
+          {children}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="outline-command-border -outline-offset-0.5 rounded-default bg-editor !my-2 flex min-w-0 flex-col outline outline-1">
       <div
-        className={`find-widget-skip bg-editor sticky -top-2 z-10 m-0 flex items-center justify-between gap-3 px-1.5 py-1 ${isExpanded ? "rounded-t-default border-command-border border-b" : "rounded-default"}`}
+        className={`find-widget-skip bg-editor sticky -top-2 z-10 m-0 flex items-center justify-between gap-3 px-1.5 py-1 ${
+          isExpanded
+            ? `rounded-t-default ${plainTextDisplay ? "" : "border-command-border border-b"}`
+            : "rounded-default"
+        }`}
         style={{ fontSize: `${getFontSize() - 2}px` }}
       >
         <div className="flex max-w-[50%] flex-row items-center">
           {toolCallStatusIcon}
-          <ChevronDownIcon
-            data-testid="toggle-codeblock"
-            onClick={() => setIsExpanded(!isExpanded)}
-            className={`text-lightgray h-3.5 w-3.5 flex-shrink-0 cursor-pointer hover:brightness-125 ${
-              isExpanded ? "rotate-0" : "-rotate-90"
-            }`}
-          />
+          {!plainTextDisplay && (
+            <ChevronDownIcon
+              data-testid="toggle-codeblock"
+              onClick={() => setIsExpanded(!isExpanded)}
+              className={`text-lightgray h-3.5 w-3.5 flex-shrink-0 cursor-pointer hover:brightness-125 ${
+                isExpanded ? "rotate-0" : "-rotate-90"
+              }`}
+            />
+          )}
           {displayFilepath ? (
             <FileInfo
               filepath={displayFilepath}
@@ -325,7 +375,11 @@ export function StepContainerPreToolbar({
               onClick={fileExists ? onClickFilename : undefined}
             />
           ) : (
-            <span className="text-lightgray ml-2 select-none capitalize">
+            <span
+              className={`text-lightgray select-none ${
+                plainTextDisplay ? "ml-0.5 capitalize" : "ml-2 capitalize"
+              }`}
+            >
               {language}
             </span>
           )}
@@ -334,7 +388,9 @@ export function StepContainerPreToolbar({
         <div className="flex items-center gap-2.5">
           {!isGeneratingCodeBlock && (
             <div className="xs:flex hidden items-center gap-2.5">
-              <InsertButton onInsert={onClickInsertAtCursor} />
+              {!plainTextDisplay && (
+                <InsertButton onInsert={onClickInsertAtCursor} />
+              )}
               <CopyButton text={codeBlockContent} />
             </div>
           )}

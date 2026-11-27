@@ -77,17 +77,42 @@ export const USER_INPUT_DESCRIPTION = [
   '- The response will include selected sub-options in brackets, e.g., "Option [SubOption1, SubOption2]"',
 ].join("\n");
 
+/** One question inside a multi-question card (Kiro-style batched intake). */
+const questionItemSchema = z.object({
+  question: z
+    .string()
+    .describe("The question text, in markdown bold (**...**) to stand out."),
+  options: z
+    .array(z.union([z.string(), optionObjectSchema]))
+    .min(1, "At least one option is required to render a choice card")
+    .describe("2-5 choices for THIS question (strings or option objects)."),
+  multiple: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true to allow selecting several options for THIS question (e.g. 'core features (multi-select)'). Defaults to single-select.",
+    ),
+});
+
 export const userInputSchema = z.object({
   question: z
     .string()
     .describe(
-      "Describe the question you would like to ask the user. This question will be presented to the user when you use this tool. Format questions in bold using markdown syntax (**question text**) to make them stand out.",
+      "Describe the question you would like to ask the user. This question will be presented to the user when you use this tool. Format questions in bold using markdown syntax (**question text**) to make them stand out. For multi-question intake, put a short heading here (e.g. '**Confirm spec setup**') and fill `questions` with the actual items.",
     ),
   options: z
     .array(z.union([z.string(), optionObjectSchema]))
     .min(1, "At least one option is required — the UI needs choices to render")
     .describe(
-      "REQUIRED: 2-5 predefined choices for the user to select from. Can be simple strings or objects with title, description, recommended, and subOptions fields. You MUST provide options for every question — including a sensible default plus 'Other (type below)' or 'Skip questions' for open-ended ones. A call without options cannot be rendered as an interactive card.",
+      "REQUIRED when `questions` is absent: 2-5 predefined choices for the user to select from. Can be simple strings or objects with title, description, recommended, and subOptions fields. You MUST provide options for every question — including a sensible default plus 'Other (type below)' or 'Skip questions' for open-ended ones. A call without options cannot be rendered as an interactive card.",
+    )
+    .optional(),
+  questions: z
+    .array(questionItemSchema)
+    .min(1)
+    .optional()
+    .describe(
+      "OPTIONAL: multiple questions gathered in ONE interactive card. Each item has its own `question` + `options`; the GUI renders them stacked and scrollable with a single Submit. Prefer this over several sequential user_input calls. When present, the top-level `question`/`options` are ignored.",
     ),
   reason: z
     .enum(["general-question"])
@@ -107,11 +132,12 @@ export const userInputSchema = z.object({
 });
 
 export type UserInputAnswer = {
-  /** Selected option title (or free-form text). */
+  /** Selected option title (or free-form text). In multi-question mode this is
+   * the joined "Q1: ...\nQ2: ..." string built by the GUI. */
   answer: string;
   /** Sub-option titles selected under the chosen option. */
   subOptions?: string[];
-  /** True when the user clicked Skip instead of answering. */
+  /** True when the user clicked Cancel/Skip instead of answering. */
   skipped?: boolean;
 };
 
@@ -158,17 +184,25 @@ export function requestUserInput(
   sessionId: string | undefined,
   signal?: AbortSignal,
 ): Promise<UserInputAnswer> {
-  // Reject option-less calls BEFORE creating the pending promise (which would
-  // otherwise hang forever). The thrown error flows back to the agent as a
-  // ToolMessage, so the model can retry with concrete options — far better
-  // than shipping generic "Other/Skip" choices that don't match the question.
-  if (!input.options?.length) {
+  // Reject calls with neither `questions` nor `options` BEFORE creating the
+  // pending promise (which would otherwise hang forever). The thrown error
+  // flows back to the agent as a ToolMessage so the model can retry with
+  // concrete options.
+  const hasQuestions =
+    Array.isArray(input.questions) && input.questions.length > 0;
+  if (!hasQuestions && !input.options?.length) {
+    console.error(
+      "[userInputTool] REJECT malformed user_input (no questions/options) | session=" +
+        String(sessionId ?? "none") +
+        " | input=" +
+        JSON.stringify(input).slice(0, 500),
+    );
     throw new Error(
-      "user_input was called WITHOUT the required 'options' array. " +
-        "Call user_input AGAIN and pass 2-5 concrete options that fit the " +
-        "question (e.g. the actual feature/framework choices), each with a " +
-        "short title and a description. The interactive card cannot render " +
-        "choices otherwise.",
+      "user_input was called WITHOUT 'questions' or the required 'options' array. " +
+        "Call user_input AGAIN and pass either `questions` (an array of " +
+        "{question, options} to gather several answers in one card) or 2-5 " +
+        "concrete `options` that fit the question. The interactive card " +
+        "cannot render choices otherwise.",
     );
   }
 
@@ -187,17 +221,28 @@ export function requestUserInput(
     }
   });
 
-  const normalizedOptions = input.options.map((o) =>
-    typeof o === "string"
-      ? { title: o }
-      : {
-          title: o.title,
-          description: o.description,
-          recommended: o.recommended,
-          subOptions: o.subOptions,
-          subOptionsLabel: o.subOptionsLabel,
-        },
-  );
+  const normalizeOptions = (
+    opts: Array<string | z.infer<typeof optionObjectSchema>>,
+  ) =>
+    opts.map((o) =>
+      typeof o === "string"
+        ? { title: o }
+        : {
+            title: o.title,
+            description: o.description,
+            recommended: o.recommended,
+            subOptions: o.subOptions,
+            subOptionsLabel: o.subOptionsLabel,
+          },
+    );
+  const normalizedOptions = normalizeOptions(input.options ?? []);
+  const normalizedQuestions = hasQuestions
+    ? input.questions!.map((q) => ({
+        question: q.question,
+        options: normalizeOptions(q.options),
+        multiple: q.multiple,
+      }))
+    : undefined;
 
   if (!protocol) {
     console.warn(
@@ -209,7 +254,9 @@ export function requestUserInput(
   }
 
   console.log(
-    "[userInputTool] >>> question sent to GUI | requestId=" + requestId,
+    "[userInputTool] >>> question sent to GUI | requestId=" +
+      requestId +
+      (normalizedQuestions ? ` questions=${normalizedQuestions.length}` : ""),
     input.question.slice(0, 200),
   );
   void protocol
@@ -218,6 +265,7 @@ export function requestUserInput(
       sessionId,
       question: input.question,
       options: normalizedOptions,
+      questions: normalizedQuestions,
       reason: input.reason,
     })
     .catch((e) => {
@@ -245,17 +293,19 @@ export function resolveUserInput(
   let id = requestId;
   if (!pending.has(id)) {
     // When the event/useEffect race is lost, the inline card falls back to the
-    // synthetic "pending" requestId. A user_input tool is awaited one at a
-    // time, so the sole pending question is unambiguous — settle it rather
-    // than leaving the agent blocked forever.
-    if (pending.size === 1) {
+    // synthetic "pending" requestId, and stale aborted questions can also
+    // leave entries behind. A user_input tool is awaited one at a time, so the
+    // OLDEST pending entry is the one the visible card is answering — settle
+    // it rather than leaving the agent blocked forever (which looked like a
+    // hang after Submit).
+    if (pending.size >= 1) {
       id = [...pending.keys()][0];
       console.warn(
-        `[userInputTool] requestId '${requestId}' unknown; using sole pending '${id}'`,
+        `[userInputTool] requestId '${requestId}' unknown; using oldest pending '${id}' (pending.size=${pending.size})`,
       );
     } else {
       console.warn(
-        "[userInputTool] !! answer for unknown/stale requestId",
+        "[userInputTool] !! answer for unknown/stale requestId (no pending)",
         requestId,
       );
       return;

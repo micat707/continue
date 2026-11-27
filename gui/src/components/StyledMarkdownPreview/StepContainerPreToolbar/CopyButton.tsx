@@ -1,4 +1,3 @@
-import { CheckIcon, ClipboardIcon } from "@heroicons/react/24/outline";
 import useCopy from "../../../hooks/useCopy";
 import { ToolTip } from "../../gui/Tooltip";
 import HoverItem from "../../mainInput/InputToolbar/HoverItem";
@@ -19,9 +18,9 @@ export function CopyButton({ text }: CopyButtonProps) {
         >
           <div className="flex items-center gap-1 transition-colors duration-200 hover:brightness-125">
             {copied ? (
-              <CheckIcon className="h-3.5 w-3.5 text-green-500 hover:brightness-125" />
+              <i className="kiro-icon codicon codicon-check text-green-500" />
             ) : (
-              <ClipboardIcon className="h-3.5 w-3.5 hover:brightness-125" />
+              <i className="kiro-icon codicon codicon-copy" />
             )}
           </div>
         </div>

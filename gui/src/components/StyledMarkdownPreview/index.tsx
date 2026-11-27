@@ -36,6 +36,7 @@ import { SyntaxHighlightedPre } from "./SyntaxHighlightedPre";
 import { isSymbolNotRif, matchCodeToSymbolOrFile } from "./utils";
 import { fixDoubleDollarNewLineLatex } from "./utils/fixDoubleDollarLatex";
 import { patchNestedMarkdown } from "./utils/patchNestedMarkdown";
+import { rehypeCodeLineNumbers } from "./utils/rehypeCodeLineNumbers";
 import { remarkTables } from "./utils/remarkTables";
 import {
   COMMAND_CARD_LANGUAGE,
@@ -282,6 +283,7 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
       rehypeKatex as any,
       {},
       rehypeHighlightPlugin(),
+      rehypeCodeLineNumbers,
       // Note: An empty obj is the default behavior, but leaving this here for scaffolding to
       // add unsupported languages in the future. We will need to install the `lowlight` package
       // to use the `common` language set in addition to unsupported languages.
@@ -335,7 +337,14 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
             return <SyntaxHighlightedPre {...preProps} />;
           }
 
-          const language = getLanguageFromClassName(className);
+          // Bare fences (``` with no language) used to be classified as a
+          // one-line terminal command by isTerminalCodeBlock, producing a bogus
+          // "Run" button for things like echoed file contents. Fall back to
+          // `text` so the toolbar shows a language label and never runs it.
+          // SyntaxHighlightedPre still uses the original className, so this
+          // only affects the toolbar, not highlighting.
+          const detectedLanguage = getLanguageFromClassName(className);
+          const language = detectedLanguage ?? "text";
 
           const isLastCodeblock = preChildProps["data-islastcodeblock"];
 
@@ -356,7 +365,11 @@ const StyledMarkdownPreview = memo(function StyledMarkdownPreview(
               codeBlockStreamId={codeblockStreamIds.current[codeBlockIndex]} // ignored if toolCallId stream state is found
               forceToolCallId={props.toolCallId}
               expanded={props.expandCodeblocks}
-              disableManualApply={props.disableManualApply}
+              disableManualApply={
+                props.disableManualApply ||
+                (!relativeFilePath && !props.toolCallId)
+              }
+              plainTextDisplay={!relativeFilePath && !props.toolCallId}
               collapsible={props.collapsible}
             >
               <SyntaxHighlightedPre {...preProps} />

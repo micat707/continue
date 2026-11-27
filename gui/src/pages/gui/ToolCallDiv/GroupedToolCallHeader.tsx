@@ -29,6 +29,7 @@ export function GroupedToolCallHeader({
     <button
       type="button"
       className="collapsible-toggle"
+      data-running={running ? "true" : "false"}
       data-testid="performing-actions"
       aria-expanded={open}
       aria-label={open ? "Collapse" : "Expand"}

@@ -11,10 +11,37 @@ export type Option = {
   subOptionsLabel?: string;
 };
 
+export type QuestionItem = {
+  question: string;
+  options: Option[];
+  multiple?: boolean;
+};
+
+/** Models often don't set `multiple` but write "(可多选)" in the question. */
+function isMultiSelect(item: QuestionItem): boolean {
+  return (
+    item.multiple === true ||
+    /可多选|多选|multi[- ]?select|select (all|any|several)/i.test(item.question)
+  );
+}
+
+/** A, B, C … (AA, AB … beyond Z) for stable, scannable option labels. */
+function optionLabel(index: number): string {
+  let n = index + 1;
+  let label = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    label = String.fromCharCode(65 + rem) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label;
+}
+
 export type PendingQuestion = {
   requestId: string;
   question: string;
   options: Option[];
+  questions?: QuestionItem[];
 };
 
 export type UserInputResponse = {
@@ -53,35 +80,161 @@ function extractAnswer(content: string | undefined): string {
     : answer;
 }
 
+type AnswerEntry = { label: string; question: string; value: string };
+
+/** Split a batched "Q1: …\nQ2: …" answer into structured rows. Returns null
+ * for a plain single answer so the simple renderer is used unchanged. */
+function parseAnswerEntries(answer: string): AnswerEntry[] | null {
+  const parts = answer
+    .split(/(?=Q\d+:\s)/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  const entries: AnswerEntry[] = [];
+  for (const part of parts) {
+    const m = part.match(/^Q(\d+):\s*([\s\S]*)$/);
+    if (!m) return null;
+    const body = m[2];
+    const arrow = body.indexOf("->");
+    entries.push({
+      label: `Q${m[1]}`,
+      question: (arrow >= 0 ? body.slice(0, arrow) : body).trim(),
+      value: (arrow >= 0 ? body.slice(arrow + 2) : "").trim(),
+    });
+  }
+  return entries;
+}
+
 /**
  * Pure UI for the user_input question card. No protocol / toolCallState deps;
  * the chat-flow wrapper (UserInputCard) owns the IDE bridge.
  */
+/** Renders the option list for one question; single- or multi-select. */
+function QuestionOptions({
+  options,
+  selectedTitles,
+  multiple,
+  onToggle,
+  disabled,
+}: {
+  options: Option[];
+  selectedTitles: string[];
+  multiple: boolean;
+  onToggle: (title: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="kiro-user-input-options">
+      {options.map((o, index) => {
+        const isSelected = selectedTitles.includes(o.title);
+        return (
+          <div
+            key={o.title}
+            role={multiple ? "checkbox" : "radio"}
+            aria-checked={isSelected}
+            tabIndex={disabled ? -1 : 0}
+            onClick={() => !disabled && onToggle(o.title)}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === " ") && !disabled) {
+                e.preventDefault();
+                onToggle(o.title);
+              }
+            }}
+            className={`kiro-user-input-option ${isSelected ? "kiro-user-input-option--selected" : ""}`}
+          >
+            <div className="kiro-user-input-option-header">
+              <span className="kiro-option-letter">{optionLabel(index)}.</span>
+              <span className="kiro-user-input-option-title">
+                {o.title}
+                {o.recommended && (
+                  <span className="kiro-user-input-badge">Recommended</span>
+                )}
+              </span>
+            </div>
+            {o.description && (
+              <div className="kiro-user-input-option-description">
+                {o.description}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function UserInputQuestionCard({
   requestId,
   question,
   options,
+  questions,
   onSubmit,
 }: {
   requestId: string;
   question: string;
   options: Option[];
+  questions?: QuestionItem[];
   onSubmit: (response: UserInputResponse) => void;
 }) {
-  // Kiro's kiro-user-input-option uses role="radio" → single-select.
-  const [selectedTitle, setSelectedTitle] = useState<string | null>(null);
-  const [freeText, setFreeText] = useState("");
+  // Normalize to a list so single- and multi-question modes share one renderer.
+  const items: QuestionItem[] =
+    questions && questions.length > 0 ? questions : [{ question, options }];
+  const multi = items.length > 1;
+
+  // One (possibly multi) selection AND one free-text answer per question.
+  // Keeping the input under its own question preserves the Q↔A relationship.
+  const [selected, setSelected] = useState<string[][]>(items.map(() => []));
+  const [details, setDetails] = useState<string[]>(items.map(() => ""));
   const [submitted, setSubmitted] = useState(false);
 
   useEffect(() => {
-    setSelectedTitle(null);
-    setFreeText("");
+    setSelected(items.map(() => []));
+    setDetails(items.map(() => ""));
     setSubmitted(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
+
+  const toggleOption = (index: number, title: string) => {
+    setSelected((prev) => {
+      const next = [...prev];
+      if (isMultiSelect(items[index])) {
+        next[index] = next[index].includes(title)
+          ? next[index].filter((t) => t !== title)
+          : [...next[index], title];
+      } else {
+        // Single-select: clicking the chosen one keeps it (no empty state).
+        next[index] = [title];
+      }
+      return next;
+    });
+  };
+
+  const isOther = (titles: string[]) =>
+    titles.some((t) => /other|其他|type below|请描述|describe/i.test(t));
 
   const submitAnswer = () => {
     if (submitted) return;
-    const answer = selectedTitle ?? freeText.trim();
+    if (multi) {
+      // Pair each question with its own answers (single or multi select) plus
+      // its free text so the model sees which answer belongs where.
+      const parts = items.map((item, i) => {
+        const choices = selected[i];
+        const detail = details[i].trim();
+        const a = choices.length ? choices.join(", ") : "(skipped)";
+        return `Q${i + 1}: ${cleanQuestion(item.question)} -> ${a}${
+          detail ? ` (detail: ${detail})` : ""
+        }`;
+      });
+      setSubmitted(true);
+      onSubmit({
+        requestId,
+        answer: parts.join("\n"),
+        subOptions: [],
+        skipped: false,
+      });
+      return;
+    }
+    const answer = selected[0].join(", ") || details[0].trim();
     if (!answer) return;
     setSubmitted(true);
     onSubmit({ requestId, answer, subOptions: [], skipped: false });
@@ -92,6 +245,11 @@ export function UserInputQuestionCard({
     setSubmitted(true);
     onSubmit({ requestId, answer: "", subOptions: [], skipped: true });
   };
+
+  const allAnswered = multi
+    ? selected.every((s) => s.length > 0) ||
+      details.some((d) => d.trim().length > 0)
+    : Boolean(selected[0].length > 0 || details[0].trim());
 
   return (
     <div className="agent-interaction-panel" data-variant="call-to-action">
@@ -104,67 +262,56 @@ export function UserInputQuestionCard({
         </div>
         <div className="agent-interaction-panel-content">
           <div className="kiro-user-input-card">
-            <div className="kiro-user-input-question">
-              <div className="kiro-streaming-text">
-                <p>{cleanQuestion(question)}</p>
-              </div>
-            </div>
-            {options.length > 0 && (
-              <div className="kiro-user-input-options">
-                {options.map((o) => {
-                  const isSelected = selectedTitle === o.title;
-                  return (
-                    <div
-                      key={o.title}
-                      role="radio"
-                      aria-checked={isSelected}
-                      tabIndex={submitted ? -1 : 0}
-                      onClick={() => !submitted && setSelectedTitle(o.title)}
-                      onKeyDown={(e) => {
-                        if (
-                          (e.key === "Enter" || e.key === " ") &&
-                          !submitted
-                        ) {
-                          e.preventDefault();
-                          setSelectedTitle(o.title);
-                        }
-                      }}
-                      className={`kiro-user-input-option ${isSelected ? "kiro-user-input-option--selected" : ""}`}
-                    >
-                      <div className="kiro-user-input-option-header">
-                        <span className="kiro-user-input-option-title">
-                          {o.title}
-                          {o.recommended && (
-                            <span className="kiro-user-input-badge">
-                              Recommended
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                      {o.description && (
-                        <div className="kiro-user-input-option-description">
-                          {o.description}
-                        </div>
-                      )}
+            <div
+              className={`kiro-user-input-questions ${multi ? "kiro-user-input-questions--scroll" : ""}`}
+            >
+              {items.map((item, i) => (
+                <div className="kiro-user-input-question-block" key={i}>
+                  <div className="kiro-user-input-question">
+                    <div className="kiro-streaming-text">
+                      <p>
+                        {multi ? `${i + 1}. ` : ""}
+                        {cleanQuestion(item.question)}
+                      </p>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-            <textarea
-              className="kiro-user-input-textarea"
-              placeholder="Or type your own answer…"
-              value={freeText}
-              onChange={(e) => setFreeText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submitAnswer();
-                }
-              }}
-              disabled={submitted}
-              rows={2}
-            />
+                  </div>
+                  <QuestionOptions
+                    options={item.options}
+                    selectedTitles={selected[i]}
+                    multiple={isMultiSelect(item)}
+                    onToggle={(title) => toggleOption(i, title)}
+                    disabled={submitted}
+                  />
+                  <textarea
+                    className={`kiro-user-input-textarea kiro-user-input-question-detail ${
+                      isOther(selected[i]) ? "is-highlighted" : ""
+                    }`}
+                    placeholder={
+                      isOther(selected[i])
+                        ? "请在这里描述你的选择…"
+                        : "补充这个题目的答案（可选）…"
+                    }
+                    value={details[i]}
+                    onChange={(e) =>
+                      setDetails((prev) => {
+                        const next = [...prev];
+                        next[i] = e.target.value;
+                        return next;
+                      })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        if (multi) e.currentTarget.blur();
+                        else submitAnswer();
+                      }
+                    }}
+                    disabled={submitted}
+                    rows={1}
+                  />
+                </div>
+              ))}
+            </div>
             <div className="kiro-user-input-actions">
               <button
                 type="button"
@@ -186,7 +333,7 @@ export function UserInputQuestionCard({
                 data-active="false"
                 data-loading="false"
                 onClick={submitAnswer}
-                disabled={submitted || (!selectedTitle && !freeText.trim())}
+                disabled={submitted || !allAnswered}
               >
                 Submit answer
               </button>
@@ -206,7 +353,15 @@ export function UserInputCard({
 }) {
   const ideMessenger = useContext(IdeMessengerContext);
   const args = toolCallState.parsedArgs as
-    | { question?: string; options?: Array<string | Option> }
+    | {
+        question?: string;
+        options?: Array<string | Option>;
+        questions?: Array<{
+          question?: string;
+          options?: Array<string | Option>;
+          multiple?: boolean;
+        }>;
+      }
     | undefined;
   const isPending = toolCallState.status !== "done";
 
@@ -217,6 +372,17 @@ export function UserInputCard({
     () => asOptions(args?.options),
     [args?.options],
   );
+  const questions: QuestionItem[] | undefined = useMemo(
+    () =>
+      args?.questions?.length
+        ? args.questions.map((q) => ({
+            question: q.question ?? "",
+            options: asOptions(q.options),
+            multiple: q.multiple,
+          }))
+        : undefined,
+    [args?.questions],
+  );
 
   useWebviewListener(
     "userInputRequested",
@@ -226,6 +392,7 @@ export function UserInputCard({
         requestId: data.requestId,
         question: data.question,
         options: (data.options ?? []) as Option[],
+        questions: (data.questions ?? undefined) as QuestionItem[] | undefined,
       });
     },
     [isPending, question],
@@ -237,14 +404,16 @@ export function UserInputCard({
         requestId: pending.requestId,
         question: pending.question,
         options: pending.options,
+        questions: pending.questions,
       }
-    : { requestId: "pending", question, options };
+    : { requestId: "pending", question, options, questions };
 
   // Kiro's toolCallUpdate: when the tool result arrives, swap the interactive
   // question for a compact answered summary IN PLACE (same toolCallId key)
   // instead of appending a second card further down the chat.
   if (toolCallState.status === "done") {
     const answer = extractAnswer(toolCallState.output?.[0]?.content);
+    const entries = answer ? parseAnswerEntries(answer) : null;
     return (
       <div className="agent-outcome user-input-outcome">
         <div className="agent-outcome-summary">
@@ -255,12 +424,34 @@ export function UserInputCard({
         </div>
         {answer && (
           <div className="agent-outcome-details">
-            <div
-              className="user-input-outcome-answer"
-              data-testid="user-input-answer"
-            >
-              {answer}
-            </div>
+            {entries ? (
+              <div
+                className="user-input-outcome-entries"
+                data-testid="user-input-answer"
+              >
+                {entries.map((entry) => (
+                  <div className="user-input-outcome-entry" key={entry.label}>
+                    <span className="user-input-outcome-entry-label">
+                      {entry.label}
+                    </span>
+                    <span className="user-input-outcome-entry-question">
+                      {entry.question}
+                    </span>
+                    <span className="user-input-outcome-entry-arrow">→</span>
+                    <span className="user-input-outcome-entry-value">
+                      {entry.value || "(skipped)"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                className="user-input-outcome-answer"
+                data-testid="user-input-answer"
+              >
+                {answer}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -273,6 +464,7 @@ export function UserInputCard({
       requestId={effective.requestId}
       question={effective.question}
       options={effective.options}
+      questions={effective.questions}
       onSubmit={(response) => {
         void ideMessenger.post("userInputResponse", response);
       }}

@@ -630,6 +630,13 @@ export const sessionSlice = createSlice({
     streamUpdate: (state, action: PayloadAction<ChatMessage[]>) => {
       if (state.history.length) {
         for (const message of action.payload) {
+          // DeepAgent HITL heartbeat: emitted only to keep the GUI stream
+          // watchdog alive while waiting for approval / user_input. It must
+          // never alter the visible conversation or tool state.
+          if ((message as any).metadata?.deepAgentHeartbeat) {
+            continue;
+          }
+
           let lastItem = state.history[state.history.length - 1];
           let lastMessage = lastItem.message;
 
@@ -738,7 +745,15 @@ export const sessionSlice = createSlice({
           if (
             lastMessage.role !== message.role ||
             message.role === "tool" || // Tool messages should always create new messages
-            (message.role === "assistant" && deepAgentToolsDone)
+            // Only split for a fresh TEXT reply after tools finished. A pure
+            // toolCall message (content empty) must STAY in the same item as
+            // its sibling/child DeepAgent tool calls — otherwise the Kiro
+            // subtask grouping (ToolCallDiv.groupEntriesBySubtask), which is
+            // scoped to one historyItem, can never see an invoke_sub_agent
+            // parent and its flat-tagged children together.
+            (message.role === "assistant" &&
+              deepAgentToolsDone &&
+              !!messageContent)
           ) {
             // Create a new message
             const historyItem: ChatHistoryItemWithMessageId = {

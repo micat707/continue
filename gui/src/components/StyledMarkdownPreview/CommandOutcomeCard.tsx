@@ -130,9 +130,9 @@ export function CommandOutcomeCard({ payload }: CommandOutcomeCardProps) {
   // Unknown exit status → amber "pending" badge, distinct from red "failed".
   const viewUnknown = !effectiveRunning && exitCode === null;
   const statusClass = effectiveRunning
-    ? "agent-icon-running"
+    ? "agent-icon-inProgress"
     : viewFailed
-      ? "agent-icon-rejected"
+      ? "agent-icon-error"
       : viewUnknown
         ? "agent-icon-pending"
         : "agent-icon-accepted";

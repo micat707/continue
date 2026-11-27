@@ -41,6 +41,11 @@ export default function StepContainer(props: StepContainerProps) {
     (props.isLast || historyItemAfterThis?.message.role === "user") &&
     !(props.isLast && (isStreaming || props.item.toolCallStates));
 
+  // Kiro-style code blocks render their own outer border/background. The
+  // `bg-background p-1` message shell would wrap them in a second frame, so
+  // drop it when the message contains a fenced code block.
+  const hasFencedCodeBlock = /```/.test(props.item.message?.content ?? "");
+
   useEffect(() => {
     if (!isStreaming) {
       const content = renderChatMessage(props.item.message).trim();
@@ -80,7 +85,7 @@ export default function StepContainer(props: StepContainerProps) {
   return (
     <div>
       <div
-        className={`bg-background p-1 ${isBeforeLatestSummary ? "opacity-35" : ""}`}
+        className={`${hasFencedCodeBlock ? "" : "bg-background p-1"} ${isBeforeLatestSummary ? "opacity-35" : ""}`}
       >
         {uiConfig?.displayRawMarkdown ? (
           <pre className="text-2xs max-w-full overflow-x-auto whitespace-pre-wrap break-words p-4">

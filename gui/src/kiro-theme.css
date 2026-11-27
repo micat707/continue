@@ -29,6 +29,29 @@
   --vscode-panel-foreground: #ffffff !important;
   --vscode-descriptionForeground: rgba(255, 255, 255, 0.7) !important;
 
+  /* Values taken verbatim from Kiro's live computed styles for the code block
+     (dom_java_show.html). The block bg is --vscode-chatCode-background
+     (foreground @ 5% alpha), NOT the sidebar colour; its border is
+     --vscode-editorGroup-border (#4a464f), not panel-border (transparent). */
+  --vscode-chatCode-background: hsl(from var(--vscode-foreground) h s l / 0.05);
+  --vscode-editorGroup-border: #4a464f !important;
+
+  /* shadcn tokens used by Kiro's Tailwind classes, mapped to the exact VS Code
+     tokens Kiro's computed styles resolve to. */
+  --border: var(
+    --vscode-editorGroup-border,
+    var(--vscode-panel-border, transparent)
+  );
+  --sidebar: var(--vscode-chatCode-background);
+  --sidebar-border: var(--vscode-editorGroup-border, #4a464f);
+  --background: var(--vscode-editor-background, #211d25);
+  --muted-foreground: var(
+    --vscode-descriptionForeground,
+    rgba(255, 255, 255, 0.7)
+  );
+  --radius-md: 6px; /* Kiro: --radius-md = 6px (code block body radius) */
+  --radius-xl: 12px; /* Kiro: --radius-xl = 12px (outer block radius) */
+
   /* Accent / brand (violet) */
   --vscode-accent: #b080ff !important;
   --vscode-focusBorder: #9e61ff !important;
@@ -620,6 +643,57 @@
   justify-content: flex-end;
 }
 
+/* ---- Kiro permission `confirm` stage (session-view-input) ----
+   Path pattern + apply-to selectors shown after the user chooses to always
+   allow/deny a tool. Mirrors kiro-ui-agent-chat's `.permission-request-*`. */
+.permission-request {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+.permission-request-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+.permission-request-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xxs);
+}
+.permission-request-field-label {
+  font-size: var(--text-xs);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+.permission-request .select-trigger {
+  appearance: none;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 24px 5px 8px;
+  border: 1px solid var(--vscode-input-border, #4a464f);
+  border-radius: var(--radius-sm);
+  background: var(--vscode-input-background, #252526);
+  color: var(--vscode-input-foreground, #d4d4d4);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+.permission-request-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
 /* ---- Kiro "user_input" question card ----
    Values copied verbatim from Kiro's kiro-ui-agent-chat/dist/style.css.
    Kiro-private tokens (--text-sm, --color-text-*) are mapped to VS Code
@@ -635,6 +709,35 @@
   --text-xs: calc(var(--vscode-font-size, 13px) - 1px);
   --color-text-primary: var(--vscode-foreground, #fff);
   --color-text-secondary: var(--vscode-descriptionForeground, #9d9d9d);
+}
+.kiro-user-input-questions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+/* Multiple questions gathered in one card: cap height and scroll so all
+   items stay reachable without pushing Submit off-screen. */
+.kiro-user-input-questions--scroll {
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: var(--spacing-xs);
+  scrollbar-color: var(--vscode-scrollbarSlider-background)
+    var(--vscode-editor-background);
+}
+.kiro-user-input-question-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+/* Per-question input: keeps free text attached to its own question. */
+.kiro-user-input-question-detail {
+  margin-top: 2px;
+  min-height: 30px;
+  resize: vertical;
+}
+.kiro-user-input-question-detail.is-highlighted {
+  border-color: var(--vscode-focusBorder, #0078d4);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder, #0078d4);
 }
 .kiro-user-input-question {
   font-size: var(--text-sm);
@@ -676,6 +779,25 @@
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
+}
+/* A/B/C option letters — stable visual anchors across questions. */
+.kiro-option-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  border-radius: 4px;
+  font-size: var(--text-xs, 11px);
+  font-weight: 700;
+  color: var(--color-text-secondary, var(--vscode-descriptionForeground));
+  flex-shrink: 0;
+}
+.kiro-user-input-option--selected .kiro-option-letter {
+  border-color: var(--vscode-focusBorder);
+  color: var(--vscode-focusBorder);
 }
 .kiro-user-input-option-title {
   font-size: var(--text-sm);
@@ -1665,11 +1787,10 @@
   padding-inline: 12px; /* --spacing-lg */
   padding-block: 6px; /* --spacing-sm */
 }
-/* Running (read/execute) phase — Kiro shows a quiet one-row status ("Read File
-   [file]") while the tool works, and only the finished edit gets the full
-   bordered card. Mute the border so the running row reads as transient. */
+/* Running (read/execute) phase — Kiro highlights the active tool card with the
+   focus/theme accent border while it is waiting or executing. */
 .agent-outcome--running {
-  border-color: transparent;
+  border-color: var(--vscode-focusBorder, #a78bfa);
 }
 .agent-outcome-status {
   display: inline-flex;
@@ -1696,8 +1817,38 @@
 .agent-icon-pending {
   color: var(--vscode-agentPendingIcon-foreground, #ffcf99);
 }
-/* Missing until the command card needed it: a failed command (non-zero exit)
-   must paint its terminal icon red, matching Kiro's rejected badge. */
+/* Kiro's ToolCallStatus mapping: failed uses agent-icon-error (not rejected),
+   in_progress uses a spinner in the theme progress color, and canceled falls
+   back to the neutral icon color. */
+.agent-icon-error {
+  color: var(
+    --vscode-agentErrorIcon-foreground,
+    var(--vscode-problemsErrorIcon-foreground, #ff8080)
+  );
+}
+.agent-icon-inProgress {
+  color: var(
+    --vscode-agentInProgressIcon-foreground,
+    var(--vscode-progressBar-background, #4fc1ff)
+  );
+}
+.agent-icon-inProgress .kiro-icon {
+  display: inline-block;
+  animation: kiro-card-spin 1.2s linear infinite;
+}
+.agent-icon-canceled {
+  color: var(
+    --vscode-agentCanceledIcon-foreground,
+    var(--vscode-icon-foreground)
+  );
+}
+/* Backward-compatible alias for older callers; new code uses inProgress. */
+.agent-icon-running {
+  color: var(
+    --vscode-agentInProgressIcon-foreground,
+    var(--vscode-progressBar-background, #4fc1ff)
+  );
+}
 .agent-icon-rejected {
   color: var(--vscode-agentRejectedIcon-foreground, #ff8080);
 }
@@ -1727,6 +1878,36 @@
   font-size: var(--vscode-font-size, 13px);
   color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.55));
   overflow-wrap: anywhere;
+}
+/* Batched Q1/Q2 answers: one row per question so the summary stays scannable. */
+.user-input-outcome-entries {
+  padding: 4px 12px 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--vscode-font-size, 13px);
+}
+.user-input-outcome-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.user-input-outcome-entry-label {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--vscode-textLink-foreground, #4daafc);
+}
+.user-input-outcome-entry-question {
+  color: var(--vscode-foreground, #cccccc);
+}
+.user-input-outcome-entry-arrow {
+  color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.5));
+}
+.user-input-outcome-entry-value {
+  color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.75));
+  font-weight: 500;
 }
 .user-input-outcome-waiting {
   font-style: italic;
@@ -1877,8 +2058,7 @@
    command + live output). The base 0.15-alpha border all but disappears on
    dark themes, so give this card a stronger edge — and keep that edge while
    the command is still running. The generic `.agent-outcome--running` variant
-   above intentionally fades the border out for the quiet one-row read/execute
-   status row; that treatment would leave this expanded card borderless. */
+   above uses the same focus/theme accent edge for the active read/execute row. */
 .agent-outcome-command {
   --agentOutcome-border: var(
     --vscode-agentOutcome-border,
@@ -2086,4 +2266,182 @@
   .collapsible-content-wrapper {
     transition: none;
   }
+}
+
+/* Kiro-style markdown code block (streamdown code-block).
+   Line numbers are kept (explicitly requested); the 40vh clamp is removed and
+   the scrollbar switched to Kiro's thin style (styles_java_show.css). */
+[data-streamdown="code-block-body"] code {
+  display: block;
+  counter-reset: kiro-code-line;
+}
+[data-streamdown="code-block-body"] .code-line {
+  display: block;
+  min-height: 1.4em;
+}
+[data-streamdown="code-block-body"] .code-line::before {
+  counter-increment: kiro-code-line;
+  content: counter(kiro-code-line);
+  display: inline-block;
+  width: 1.5rem;
+  margin-right: 1rem;
+  text-align: right;
+  font-family: var(--monaco-monospace-font, monospace);
+  font-size: 13px;
+  color: var(--muted-foreground);
+  opacity: 0.5;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* High specificity wins over styled-components' runtime `!important` rules.
+   Keep long lines scrollable (white-space: pre + overflow-x: auto), but no
+   height clamp — Kiro shows a horizontal scrollbar thumb when a line is too
+   long and hides the webview's ‹ › scrollbar arrow buttons (rule below). */
+html body [data-streamdown="code-block-body"] pre {
+  max-height: none !important;
+  overflow-y: hidden !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  border-radius: 0 !important;
+}
+[data-streamdown="code-block-body"] pre code,
+[data-streamdown="code-block-body"] code {
+  /* Override .wmde-markdown code { padding:.2em .4em; background; radius } */
+  padding: 0 !important;
+  background-color: transparent !important;
+  border-radius: 0 !important;
+}
+[data-streamdown="code-block-body"] pre::-webkit-scrollbar,
+[data-streamdown="code-block-body"] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+/* Hide the webview's scrollbar arrow buttons (‹ › / ▲ ▼). Kiro only shows a
+   thumb when content actually overflows, never the arrow buttons. */
+html body [data-streamdown="code-block-body"] pre::-webkit-scrollbar-button,
+html body [data-streamdown="code-block-body"] ::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+[data-streamdown="code-block-body"] pre::-webkit-scrollbar-thumb,
+[data-streamdown="code-block-body"] ::-webkit-scrollbar-thumb {
+  background-color: var(
+    --vscode-scrollbarSlider-background,
+    rgba(255, 255, 255, 0.2)
+  );
+}
+[data-streamdown="code-block-body"] pre::-webkit-scrollbar-thumb:hover,
+[data-streamdown="code-block-body"] ::-webkit-scrollbar-thumb:hover {
+  background-color: var(
+    --vscode-scrollbarSlider-hoverBackground,
+    rgba(255, 255, 255, 0.3)
+  );
+}
+
+/* Kiro uses shiki with exactly 5 dark-theme colours (extracted from
+   dom_java_show.html --shiki-dark values). Our highlight.js theme renders a
+   different palette; map its token classes onto Kiro's 5 colours. */
+[data-streamdown="code-block"] .hljs-keyword,
+[data-streamdown="code-block"] .hljs-selector-tag,
+[data-streamdown="code-block"] .hljs-literal,
+[data-streamdown="code-block"] .hljs-meta,
+[data-streamdown="code-block"] .hljs-doctag {
+  color: #569cd6 !important; /* keyword / @annotation */
+}
+[data-streamdown="code-block"] .hljs-string,
+[data-streamdown="code-block"] .hljs-regexp,
+[data-streamdown="code-block"] .hljs-template-variable {
+  color: #ce9178 !important; /* string */
+}
+[data-streamdown="code-block"] .hljs-built_in,
+[data-streamdown="code-block"] .hljs-type,
+[data-streamdown="code-block"] .hljs-class .hljs-title,
+[data-streamdown="code-block"] .hljs-symbol {
+  color: #4ec9b0 !important; /* type */
+}
+[data-streamdown="code-block"] .hljs-attr,
+[data-streamdown="code-block"] .hljs-attribute,
+[data-streamdown="code-block"] .hljs-variable,
+[data-streamdown="code-block"] .hljs-params,
+[data-streamdown="code-block"] .hljs-property {
+  color: #9cdcfe !important; /* variable */
+}
+[data-streamdown="code-block"] .hljs-comment,
+[data-streamdown="code-block"] .hljs-quote {
+  color: #d4d4d4 !important; /* Kiro has no distinct comment colour here */
+}
+
+/* Kiro's pre carries bg-[var(--sdm-bg,inherit)] with --sdm-bg: transparent. */
+[data-streamdown="code-block-body"] pre {
+  background-color: transparent !important;
+}
+
+/* ---- Kiro code block layout (exact values from dom_java_show.html) ----
+   Outer: my-4 flex w-full flex-col gap-2 rounded-xl border border-border
+          bg-sidebar p-2
+   Header: flex h-8 items-center text-muted-foreground text-xs
+   Actions: sticky top-2 -mt-10 flex h-8 justify-end, inner pill rounded-md
+            border border-sidebar bg-sidebar/80 px-1.5 py-1
+   Body: language-java overflow-x-auto rounded-md border border-border
+         bg-background p-4 text-sm
+   Using plain CSS avoids depending on Tailwind JIT generating new classes. */
+.kiro-code-block {
+  margin: 1rem 0;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0; /* no gap between the two stacked rows */
+  position: relative; /* anchor the absolute copy action */
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--sidebar);
+  overflow: hidden; /* clip body to the rounded outer frame */
+}
+.kiro-code-block-header {
+  display: flex;
+  height: 2rem; /* h-8 */
+  align-items: center;
+  padding: 0 0.75rem;
+  font-size: 12px; /* text-xs */
+  color: var(--muted-foreground);
+}
+.kiro-code-block-lang {
+  margin-left: 0.25rem; /* ml-1 */
+  font-family: var(--monaco-monospace-font, monospace);
+  text-transform: lowercase;
+}
+.kiro-code-block-actions-row {
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 10;
+  height: 2rem; /* h-8 — align with header row */
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 0.5rem;
+}
+.kiro-code-block-actions {
+  pointer-events: auto;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem; /* gap-2 */
+  border-radius: 6px; /* rounded-md */
+  border: 1px solid var(--sidebar-border);
+  background-color: var(--sidebar);
+  padding: 0.25rem 0.375rem; /* py-1 px-1.5 */
+}
+.kiro-code-block-body {
+  overflow-x: auto;
+  /* No rounded inner frame: the body is a rectangular tint that differs
+     slightly from the outer block, giving a top (language header) / bottom
+     (code) split without looking like a nested box. */
+  border: none;
+  border-radius: 0;
+  background-color: var(--background);
+  padding: 1rem; /* p-4 */
+  font-size: 14px; /* text-sm */
 }

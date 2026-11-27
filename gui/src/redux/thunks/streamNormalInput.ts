@@ -28,6 +28,7 @@ import StreamErrorDialog from "../../pages/gui/StreamError";
 import { ThunkApiType } from "../store";
 import { constructMessages } from "../util/constructMessages";
 import { getMicatEnvironmentContext } from "../util/environmentBlocks";
+import { clearHitlPending, isHitlPending } from "../../util/hitlPendingStore";
 
 import { modelSupportsNativeTools } from "core/llm/toolSupport";
 import { applyToolOverrides } from "core/tools/applyToolOverrides";
@@ -367,19 +368,25 @@ export const streamNormalInput = createAsyncThunk<
       const STREAM_INACTIVITY_TIMEOUT_MS = 3 * 60_000;
       const readNext = () => {
         let timer: ReturnType<typeof setTimeout> | undefined;
+        const armTimer = (reject: (reason: Error) => void) => {
+          timer = setTimeout(() => {
+            // A HITL approval pause is not a stalled model stream. Keep the
+            // generator open and re-arm the watchdog until the human answers;
+            // the extension's heartbeat may also wake us in the meantime.
+            if (isHitlPending(owningSessionId)) {
+              armTimer(reject);
+              return;
+            }
+            reject(
+              new Error(
+                `[continue] LLM stream stalled: no chunks for ${STREAM_INACTIVITY_TIMEOUT_MS / 1000}s — connection presumed dead`,
+              ),
+            );
+          }, STREAM_INACTIVITY_TIMEOUT_MS);
+        };
         return Promise.race([
           gen.next(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `[continue] LLM stream stalled: no chunks for ${STREAM_INACTIVITY_TIMEOUT_MS / 1000}s — connection presumed dead`,
-                  ),
-                ),
-              STREAM_INACTIVITY_TIMEOUT_MS,
-            );
-          }),
+          new Promise<never>((_, reject) => armTimer(reject)),
         ]).finally(() => clearTimeout(timer));
       };
       const handleStalledStream = (e: unknown): boolean => {
@@ -390,6 +397,7 @@ export const streamNormalInput = createAsyncThunk<
           return false;
         }
         console.error("[continue] ✕", e.message, `#${requestId}`);
+        clearHitlPending(owningSessionId);
         dispatch(inSession(setInactive(), owningSessionId));
         dispatch(abortStream(owningSessionId));
         dispatch(inSession(clearDanglingMessages(), owningSessionId));

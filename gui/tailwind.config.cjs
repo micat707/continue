@@ -53,9 +53,21 @@ module.exports = {
           hover: varWithFallback("secondary-hover"),
         },
         border: {
-          DEFAULT: varWithFallback("border"),
+          // Kiro's `border-border` reads the shadcn `--border` token directly
+          // (computed: var(--vscode-editorGroup-border, ...)). The old
+          // varWithFallback("border") resolved to panel-border = transparent,
+          // which made Kiro-style block borders invisible.
+          DEFAULT: "var(--border)",
           focus: varWithFallback("border-focus"),
         },
+        // Kiro shadcn tokens (declared in kiro-theme.css :root), mapped here so
+        // copied Kiro markup (bg-sidebar, border-border, text-muted-foreground,
+        // bg-sidebar/80 ...) compiles to the same utilities Kiro uses.
+        sidebar: {
+          DEFAULT: "var(--sidebar)",
+          border: "var(--sidebar-border)",
+        },
+        "muted-foreground": "var(--muted-foreground)",
         command: {
           DEFAULT: varWithFallback("command-background"),
           foreground: varWithFallback("command-foreground"),

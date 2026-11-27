@@ -54,6 +54,10 @@ export function addToolCallDeltaToState(
 
   const [_, parsedArgs] = incrementalParseJson(mergedArgs || "{}");
 
+  // Kiro-style grouping tag: prefer the incoming delta, keep the existing one
+  // on argument-only fragments (which carry no _meta).
+  const meta = toolCallDelta._meta ?? currentCall?._meta;
+
   return {
     status: "generating",
     toolCall: {
@@ -63,9 +67,11 @@ export function addToolCallDeltaToState(
         name: mergedName,
         arguments: mergedArgs,
       },
+      ...(meta ? { _meta: meta } : {}),
     },
     toolCallId: callId,
     parsedArgs,
+    ...(meta ? { _meta: meta } : {}),
   };
 }
 

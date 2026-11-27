@@ -353,6 +353,27 @@ export type MessagePart = TextMessagePart | ImageMessagePart;
 
 export type MessageContent = string | MessagePart[];
 
+/**
+ * Kiro-aligned per-tool metadata. Rides on the tool call itself (not on the
+ * ChatMessage) so it survives delta streaming + toolCallState construction.
+ *
+ * `agentSubtaskId` is the toolCallId of the owning `invoke_sub_agent` card;
+ * the GUI groups every tool carrying this tag under that parent card, exactly
+ * like Kiro's `_meta.kiro.agentSubtaskId` / `subtaskEntries` model.
+ */
+export interface ToolCallMetaKiro {
+  agentSubtaskId?: string;
+  /** "agent-subtask" marks an invoke_sub_agent card that owns children. */
+  kind?: string;
+  toolId?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+export interface ToolCallMeta {
+  kiro?: ToolCallMetaKiro;
+  [key: string]: unknown;
+}
+
 export interface ToolCall {
   id: string;
   type: "function";
@@ -360,6 +381,7 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+  _meta?: ToolCallMeta;
 }
 
 export interface ToolCallDelta {
@@ -369,6 +391,7 @@ export interface ToolCallDelta {
     name?: string;
     arguments?: string;
   };
+  _meta?: ToolCallMeta;
 }
 
 export interface ToolResultChatMessage {
@@ -522,6 +545,8 @@ interface ToolCallState {
   output?: ContextItem[];
   tool?: Tool;
   mcpUiState?: McpUiState;
+  /** Kiro-style grouping tag; mirrors `toolCall._meta` for cheap UI access. */
+  _meta?: ToolCallMeta;
 }
 
 interface Reasoning {

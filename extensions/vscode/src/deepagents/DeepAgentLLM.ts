@@ -16,7 +16,7 @@
  * standalone "Deep Agent Chat" panel for tool cards).
  */
 
-import type { ChatMessage, CompletionOptions, ILLM } from "core";
+import type { ChatMessage, CompletionOptions, ILLM, ToolCallMeta } from "core";
 import { createDeepAgent } from "deepagents";
 import { randomUUID } from "crypto";
 import { v4 as uuidv4 } from "uuid";
@@ -43,6 +43,7 @@ import {
   setExecuteRunId,
 } from "./workspaceBackend";
 import { createDeepAgentToolsAsync } from "./acpToolKit";
+import { createToolNameTransformer } from "./toolNameTransformer";
 import type { ContinueConfig } from "core";
 import {
   createKiroContextFileResolver,
@@ -70,8 +71,16 @@ import {
   resolveExecuteAction,
   type MergedRules,
 } from "./permissions";
-import { loadGlobalConfig, loadWorkspaceConfig } from "./permissionStore";
+import {
+  addTrustedDir,
+  loadGlobalConfig,
+  loadWorkspaceConfig,
+} from "./permissionStore";
 import { requestHitlDecision } from "./hitlBridge";
+import {
+  FILE_CONTENT_DISPLAY_RULE,
+  NATIVE_TOOL_CALL_RULE,
+} from "./promptRules";
 import { getGuiPolicyLayer } from "./toolPolicyBridge";
 import {
   formatExecuteOutput,
@@ -122,12 +131,15 @@ export function getSessionPermissionHandle(
  */
 type QueueItem =
   | { kind: "text" | "thinking"; text: string }
+  | { kind: "heartbeat" }
   | {
       kind: "toolCall";
       toolCall: {
         id: string;
         type: "function";
         function: { name: string; arguments: string };
+        /** Kiro-style flat grouping tag; children point at parent toolCallId. */
+        _meta?: ToolCallMeta;
       };
     }
   | { kind: "toolResult"; toolCallId: string; content: string };
@@ -314,9 +326,14 @@ async function buildSessionRuntime(
     if (inWorkspaceFolders(path, rootOverride)) return "inside";
     const n = normalizePath(path);
     if (
-      merged.trustedDirs.some(
-        (d) => n === normalizePath(d) || n.startsWith(normalizePath(d) + "/"),
-      )
+      merged.trustedDirs.some((d) => {
+        const normalizedDir = normalizePath(d);
+        return (
+          normalizedDir === "**" ||
+          n === normalizedDir ||
+          n.startsWith(normalizedDir + "/")
+        );
+      })
     )
       return "inside";
     return "outside";
@@ -474,8 +491,9 @@ async function buildSessionRuntime(
 
   const agent = createDeepAgent({
     model: adapter,
-    systemPrompt:
-      "You are a helpful coding assistant. Use the filesystem tools when needed.",
+    systemPrompt: `${NATIVE_TOOL_CALL_RULE}
+${FILE_CONTENT_DISPLAY_RULE}
+You are a helpful coding assistant. Use the filesystem tools when needed.`,
     // Factory runs on every agent turn, so workspace changes (including
     // folders added via "Add Folder to Workspace…") are picked up live, and the
     // policy is re-evaluated each turn.
@@ -491,6 +509,10 @@ async function buildSessionRuntime(
     // MemorySaver keeps the thread state so a paused run can be resumed on the
     // same thread_id after the user's decision.
     checkpointer: new MemorySaver(),
+    // Kiro-aligned: publish the authoritative tool name from `tool-started`
+    // (on_tool_start). Accessed via run.extensions.toolNames to repair the
+    // corrupted name on run.toolCalls / sub.toolCalls.
+    streamTransformers: [createToolNameTransformer],
     interruptOn,
     // Kiro's invoke_sub_agent: expose the 5 preset agents and let contextFiles
     // resolve against this session's workspace layout. spec-task-execution is
@@ -594,7 +616,182 @@ async function buildSessionRuntime(
     let answerChars = 0;
     let toolCount = 0;
 
+    // Kiro shows the tool card while the approval panel is open. LangGraph
+    // sometimes emits `run.toolCalls` only after the interrupt is resumed, so
+    // the normal toolProducer would be too late. We therefore emit a card as
+    // soon as the HITL payload arrives, then reuse the SAME card id when the
+    // real toolProducer/result arrives (deduped by a name+full-input fingerprint).
+    // IMPORTANT: the fingerprint must include the whole argument set, not just
+    // the path. Repeated segmented reads of one file differ only by offset/
+    // limit; a path-only key collapsed them into ONE card (range overwritten
+    // by the last read). Full input keeps each range as its own card while
+    // still letting the HITL pre-card and the real call dedupe to the same id.
+    const toolCardIdsByFingerprint = new Map<string, string>();
+    const toolCardFingerprint = (name: string, input: string): string => {
+      try {
+        // Canonicalise key order so identical args always produce one signature.
+        const obj = JSON.parse(input) as Record<string, unknown>;
+        const canonical = JSON.stringify(
+          Object.keys(obj)
+            .sort()
+            .reduce<Record<string, unknown>>((acc, key) => {
+              acc[key] = obj[key];
+              return acc;
+            }, {}),
+        );
+        return `${name}:${canonical}`;
+      } catch {
+        return `${name}:${input}`;
+      }
+    };
+    const emitHitlToolCards = (payload: any, requestId: string) => {
+      const actions = payload?.actionRequests ?? [];
+      actions.forEach((a: any, idx: number) => {
+        const name = String(a?.name ?? "tool");
+        const input = formatToolInput(a?.args ?? {});
+        const fp = toolCardFingerprint(name, input);
+        if (!toolCardIdsByFingerprint.has(fp)) {
+          toolCardIdsByFingerprint.set(
+            fp,
+            `deepagent-hitl-${requestId}-${idx}`,
+          );
+          queue.push({
+            kind: "toolCall",
+            toolCall: {
+              id: `deepagent-hitl-${requestId}-${idx}`,
+              type: "function",
+              function: { name, arguments: input },
+              // Keep the Kiro-style search/read icon (not a spinner) while the
+              // approval panel is open; the result will flip it to done.
+              _meta: { kiro: { pendingApproval: true } },
+            },
+          });
+        }
+      });
+    };
+
+    // GUI treats 3 minutes without any streamed chunk as a dead connection.
+    // HITL approval / user_input pause the agent with no output, so emit a
+    // metadata-only, invisible chunk periodically. The GUI filters it out of
+    // history; its only job is to reset the watchdog while we wait for a human.
+    const HITL_HEARTBEAT_MS = 30_000;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatWaiters = 0;
+    const beginHitlHeartbeat = (reason: string) => {
+      heartbeatWaiters += 1;
+      if (heartbeatTimer) return;
+      console.log(`[DeepAgent] >>> HITL heartbeat start | reason=${reason}`);
+      let beats = 0;
+      heartbeatTimer = setInterval(() => {
+        if (_signal?.aborted) return;
+        queue.push({ kind: "heartbeat" });
+        beats += 1;
+        if (beats === 1 || beats % 10 === 0) {
+          console.log(`[DeepAgent] HITL heartbeat ${beats} | reason=${reason}`);
+        }
+      }, HITL_HEARTBEAT_MS);
+    };
+    const endHitlHeartbeat = (reason: string) => {
+      heartbeatWaiters = Math.max(0, heartbeatWaiters - 1);
+      if (heartbeatWaiters > 0 || !heartbeatTimer) return;
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+      console.log(`[DeepAgent] <<< HITL heartbeat stop | reason=${reason}`);
+    };
+
     const pump = async (run: any): Promise<boolean> => {
+      // Correlation table for invoke_sub_agent → its native card id. The
+      // subagent envelope prefers `sub.cause.tool_call_id`, but langchain's
+      // deriveCause can return undefined when the `tasks` event arrives before
+      // the tool-started event. In that case fall back to this table so the
+      // nested tool tree still lands on the outer card (Kiro SubtaskToolCall).
+      const subagentInvocations: Array<{
+        modelCallId: string;
+        structuredId: string;
+        subName: string;
+      }> = [];
+      // Parent cards that must reach "done" even if no subagent handle arrives.
+      const pendingSubagentResults: Array<{
+        cardId: string;
+        fallback: string;
+        emitted: boolean;
+      }> = [];
+      // Kiro-aligned authoritative names: run.extensions.toolNames is fed by
+      // our custom transformer from `tool-started` (on_tool_start), which is
+      // immune to the streaming name corruption on run.toolCalls. Drain this
+      // stream CONCURRENTLY with the others (all read the same event buffer).
+      const authoritativeNames = new Map<string, string>();
+      // Waiters let a consumer await the authoritative name for a specific
+      // callId instead of polling — tool-started may lag content-block-finish.
+      const nameWaiters = new Map<
+        string,
+        { promise: Promise<string>; resolve: (name: string) => void }
+      >();
+      const waitForAuthoritativeName = (callId: string): Promise<string> => {
+        const existing = authoritativeNames.get(callId);
+        if (existing) return Promise.resolve(existing);
+        let resolve!: (name: string) => void;
+        const promise = new Promise<string>((r) => (resolve = r));
+        nameWaiters.set(callId, { promise, resolve });
+        return promise;
+      };
+      const toolNamesProducer = (async () => {
+        try {
+          const ext = (run as any)?.extensions;
+          const channel = ext?.toolNames as
+            | AsyncIterable<{ callId: string; name: string }>
+            | undefined;
+          if (!channel) return;
+          for await (const entry of channel) {
+            if (entry?.callId && entry?.name) {
+              authoritativeNames.set(entry.callId, entry.name);
+              const waiter = nameWaiters.get(entry.callId);
+              if (waiter) {
+                waiter.resolve(entry.name);
+                nameWaiters.delete(entry.callId);
+              }
+            }
+          }
+        } catch (e) {
+          console.log(
+            `[DeepAgent] toolNames channel error: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
+        } finally {
+          // Release any waiters that never got a name (e.g. tool was denied).
+          for (const waiter of nameWaiters.values()) waiter.resolve("");
+          nameWaiters.clear();
+        }
+      })();
+      // Resolve the authoritative name with a short timeout. Kiro's
+      // on_tool_start name is the single source of truth.
+      const resolveToolName = async (
+        call: { id?: unknown; callId?: unknown; name?: unknown },
+        input: string,
+      ): Promise<string> => {
+        // run.toolCalls exposes the call id as `callId`; some projections use
+        // `id`. Accept both so the authoritative-name lookup always matches.
+        const callId =
+          typeof call.callId === "string"
+            ? call.callId
+            : typeof call.id === "string"
+              ? call.id
+              : "";
+        let authoritative = "";
+        if (callId) {
+          // tool-started fires when the tool executes; cap the wait so a
+          // never-starting tool can't stall the producer.
+          authoritative = await Promise.race([
+            waitForAuthoritativeName(callId),
+            new Promise<string>((r) => setTimeout(() => r(""), 400)),
+          ]);
+        }
+        // Authoritative name is the ONLY source. If the channel misses, use
+        // the raw name verbatim — never guess from input shape (a new tool
+        // with overlapping args could be misidentified).
+        return authoritative || String(call.name ?? "tool");
+      };
       const textProducer = (async () => {
         try {
           for await (const msg of run.messages ?? []) {
@@ -649,8 +846,11 @@ async function buildSessionRuntime(
               break;
             }
             try {
-              const name = call.name ?? "tool";
+              // Prefer Kiro-style authoritative name from tool-started
+              // (on_tool_start); fall back to input-shape inference only if
+              // that channel is unavailable/slow.
               const input = formatToolInput(await call.input);
+              const name = await resolveToolName(call as any, input);
               // Every tool shares one stable id between tool_call and
               // tool_result. The `deepagent-` prefix tells the GUI this tool
               // already ran inside DeepAgent — Continue's tool loop must not
@@ -666,9 +866,17 @@ async function buildSessionRuntime(
               // Give every structured tool a stable, name-based id so its card
               // updates in place (Kiro toolCallUpdate). The `deepagent-` prefix
               // tells Continue's tool loop the tool already ran inside DeepAgent.
-              const structuredToolCallId = `deepagent-${name}-${
-                call.id ?? uuidv4()
-              }`;
+              const cardFingerprint = toolCardFingerprint(name, input);
+              const existingCardId =
+                toolCardIdsByFingerprint.get(cardFingerprint);
+              const structuredToolCallId =
+                existingCardId ?? `deepagent-${name}-${call.id ?? uuidv4()}`;
+              if (!existingCardId) {
+                toolCardIdsByFingerprint.set(
+                  cardFingerprint,
+                  structuredToolCallId,
+                );
+              }
               // For execute: allocate the runId BEFORE emitting the tool_call so
               // the GUI card can subscribe to `deepagentExecuteProgress[runId]`
               // the moment it mounts (Kiro's streamedShellOutput[runId] model).
@@ -729,17 +937,27 @@ async function buildSessionRuntime(
               // updates in place (Kiro's toolCallUpdate semantics) with no
               // markdown-rewrite jitter. The `deepagent-` id prefix prevents
               // Continue's tool loop from running it a second time.
-              if (structured) {
+              if (structured && !existingCardId) {
+                // Kiro: the parent invoke_sub_agent card carries
+                // `_meta.kiro.kind = "agent-subtask"` so the GUI route it to
+                // SubtaskToolCall. Its children (emitted by subagentProducer)
+                // point back at this id via `_meta.kiro.agentSubtaskId`.
                 queue.push({
                   kind: "toolCall",
                   toolCall: {
                     id: structuredToolCallId,
                     type: "function",
                     function: { name, arguments: toolCallArgs },
+                    ...(name === "invoke_sub_agent"
+                      ? { _meta: { kiro: { kind: "agent-subtask" } } }
+                      : {}),
                   },
                 });
               }
               let output = "";
+              if (name === "user_input") {
+                beginHitlHeartbeat("user_input");
+              }
               try {
                 // The execute tool's result must reach the GUI as a JSON
                 // envelope ({ output, exitCode }) so the Run Command card shows
@@ -753,12 +971,20 @@ async function buildSessionRuntime(
                 output =
                   "error: " +
                   (err instanceof Error ? err.message : String(err));
+                console.error(
+                  `[DeepAgent] tool ${name} failed | toolCallId=${structuredToolCallId} | output=${output.slice(0, 500)}`,
+                );
+              } finally {
+                if (name === "user_input") {
+                  endHitlHeartbeat("user_input");
+                }
               }
               toolCount += 1;
-              // invoke_sub_agent: emit an empty envelope as a fallback so the
-              // outer card always reaches "done" even if run.subagents yields no
-              // handle. subagentProducer overwrites this same id with the full
-              // nested tool tree (Kiro SubtaskToolCall) shortly after.
+              // invoke_sub_agent: record the correlation so subagentProducer
+              // can find this card. Do NOT emit a result here — the flat child
+              // tool calls + final text from subagentProducer complete it. The
+              // outer tool's own output is kept as a fallback for the case where
+              // run.subagents yields no handle at all.
               if (name === "invoke_sub_agent") {
                 let subName = "sub-agent";
                 try {
@@ -767,15 +993,15 @@ async function buildSessionRuntime(
                 } catch {
                   /* keep default */
                 }
-                queue.push({
-                  kind: "toolResult",
-                  toolCallId: structuredToolCallId,
-                  content: JSON.stringify({
-                    __subagent: true,
-                    name: subName,
-                    final: output,
-                    children: [],
-                  }),
+                subagentInvocations.push({
+                  modelCallId: String(call.id ?? ""),
+                  structuredId: structuredToolCallId,
+                  subName,
+                });
+                pendingSubagentResults.push({
+                  cardId: structuredToolCallId,
+                  fallback: output,
+                  emitted: false,
                 });
                 continue;
               }
@@ -827,96 +1053,166 @@ async function buildSessionRuntime(
         }
       })();
 
-      // Kiro SubtaskToolCall: collect each subagent's own tool calls from the
-      // native `run.subagents` projection and stream them into the GUI as a
-      // JSON envelope on the SAME toolCallId as the outer invoke_sub_agent.
-      // The GUI renders a nested tool group inside the Sub-agent card. `cause`
-      // links the subagent run back to its triggering tool_call_id (verified in
-      // langchain/dist/agents/transformers/subagent.js).
+      // Kiro SubtaskToolCall: stream each subagent tool as a FLAT, independent
+      // toolCall carrying `_meta.kiro.agentSubtaskId = <outer card id>`. The GUI
+      // groups them by that tag (exactly Kiro's `subtaskEntries` model) instead
+      // of a JSON envelope. `cause` links the subagent run back to its trigger
+      // (langchain/dist/agents/transformers/subagent.js); when deriveCause
+      // returns undefined we fall back to the invocation table by name/order.
       const runSubagentProducer = async () => {
-        type Child = {
-          name: string;
-          input: string;
-          output: string;
-          status: string;
-          children?: Child[];
+        // Resolve the outer parent card id.
+        const resolveCardId = (sub: any, index: number): string => {
+          const cause = sub.cause?.tool_call_id;
+          // 1) Exact match: cause (LLM tool_call_id) === recorded modelCallId.
+          if (typeof cause === "string" && cause.length > 0) {
+            const byCause = subagentInvocations.find(
+              (inv) => inv.modelCallId === cause,
+            );
+            if (byCause) return byCause.structuredId;
+            // cause is a DIFFERENT id namespace than the card's `call.id`
+            // (LangChain transformer rewrites it to a UUID). Do NOT build a
+            // synthetic id from cause — it can never match a real card. Fall
+            // through to the invocation table instead.
+          }
+          // 2) Positional match: run.subagents iteration order === the order
+          // invoke_sub_agent calls were recorded in toolProducer.
+          const byIndex = subagentInvocations[index];
+          if (byIndex) return byIndex.structuredId;
+          // 3) Name match as a last resort (single subagent case).
+          const byName = subagentInvocations.find(
+            (inv) => inv.subName === sub.name,
+          );
+          if (byName) return byName.structuredId;
+          return `deepagent-invoke_sub_agent-${cause ?? ""}`;
         };
 
+        // Emit one flat toolCall + its result per child tool. `parentCardId` is
+        // the tag value the GUI groups on; `depth` bounds nested delegation.
         const collect = async (
           sub: any,
           depth: number,
-        ): Promise<{ children: Child[]; final: string }> => {
-          const children: Child[] = [];
-          const toolCallId = `deepagent-invoke_sub_agent-${
-            sub.cause?.tool_call_id ?? ""
-          }`;
-          let final = "";
-          // Push the whole envelope on every change — same toolCallId means the
-          // GUI updates one card in place (Kiro tool_call_update semantics).
-          const emit = () => {
-            queue.push({
-              kind: "toolResult",
-              toolCallId,
-              content: JSON.stringify({
-                __subagent: true,
-                name: sub.name ?? "sub-agent",
-                final,
-                children,
-              }),
-            });
-          };
-
+          parentCardId: string,
+        ): Promise<void> => {
+          if (!parentCardId) return;
           if (depth < 3) {
             for await (const call of sub.toolCalls ?? []) {
               if (_signal?.aborted) break;
-              const child: Child = {
-                name: call.name ?? "tool",
-                input: formatToolInput(await call.input),
-                output: "",
-                status: "pending",
-              };
-              children.push(child);
-              emit(); // tool-call row appears immediately
+              const inputText = formatToolInput(await call.input);
+              const childName = await resolveToolName(call as any, inputText);
+              // Stable, unique id: deepagent- prefix keeps Continue's tool loop
+              // from re-executing; parent id in the suffix makes it correlate.
+              const childId = `deepagent-sub-${parentCardId}-${call.id ?? uuidv4()}`;
+              queue.push({
+                kind: "toolCall",
+                toolCall: {
+                  id: childId,
+                  type: "function",
+                  function: { name: childName, arguments: inputText },
+                  _meta: {
+                    kiro: {
+                      agentSubtaskId: parentCardId,
+                      toolId: childName,
+                    },
+                  },
+                },
+              });
+              let output = "";
+              let status = "finished";
               try {
-                child.output = formatToolOutput(await call.output);
-                child.status = String(await call.status);
+                output = formatToolOutput(await call.output);
+                status = String(await call.status);
               } catch (err) {
-                child.status = "error";
-                child.output =
+                status = "error";
+                output =
                   "error: " +
                   (err instanceof Error ? err.message : String(err));
               }
-              emit(); // output fills in place
+              queue.push({
+                kind: "toolResult",
+                toolCallId: childId,
+                content: JSON.stringify({
+                  output,
+                  status,
+                }),
+              });
             }
-            // Grandchild subagents (nested delegation) — same shape.
+            // Grandchild subagents: their parent card is a nested invoke_sub_agent
+            // toolCall emitted below, so grandchildren point at THAT id.
+            let nestedIndex = 0;
             for await (const nested of sub.subagents ?? []) {
-              const nestedData = await collect(nested, depth + 1);
-              children.push({
-                name: `sub-agent: ${nested.name ?? "agent"}`,
-                input: "",
-                output: nestedData.final,
-                status: "completed",
-                children: nestedData.children,
-              } as Child);
-              emit();
+              const nestedParentId = `deepagent-invoke_sub_agent-nested-${parentCardId}-${nestedIndex++}`;
+              // Nested delegation parent card, itself a child of this subtask.
+              queue.push({
+                kind: "toolCall",
+                toolCall: {
+                  id: nestedParentId,
+                  type: "function",
+                  function: {
+                    name: "invoke_sub_agent",
+                    arguments: formatToolInput({
+                      name: nested.name ?? "agent",
+                    }),
+                  },
+                  _meta: {
+                    kiro: {
+                      kind: "agent-subtask",
+                      agentSubtaskId: parentCardId,
+                    },
+                  },
+                },
+              });
+              await collect(nested, depth + 1, nestedParentId);
+              queue.push({
+                kind: "toolResult",
+                toolCallId: nestedParentId,
+                content: `sub-agent: ${nested.name ?? "agent"}`,
+              });
             }
           }
-          // Final assistant text from the subagent (outer result fallback).
+          // Final assistant text + reasoning of the subagent → completes the
+          // outer card. Kiro's card itself only groups child tools, but we also
+          // carry the subagent's own trace in the toolResult so the GUI can
+          // show it when the user expands the card.
+          let final = "";
+          let reasoning = "";
           try {
             for await (const msg of sub.messages ?? []) {
+              const reasoningJob = (async () => {
+                try {
+                  for await (const rt of (msg as any).reasoning ?? []) {
+                    if (rt) reasoning += rt;
+                  }
+                } catch {
+                  /* subagent reasoning is best-effort */
+                }
+              })();
               for await (const token of msg.text ?? []) final += token;
+              await reasoningJob;
             }
           } catch {
             /* subagent text is best-effort */
           }
-          emit();
-          return { children, final };
+          queue.push({
+            kind: "toolResult",
+            toolCallId: parentCardId,
+            content: JSON.stringify({
+              __subagentV2: true,
+              name: sub.name ?? "",
+              reasoning,
+              final,
+            }),
+          });
+          const pending = pendingSubagentResults.find(
+            (p) => p.cardId === parentCardId,
+          );
+          if (pending) pending.emitted = true;
         };
 
         try {
+          let subIndex = 0;
           for await (const sub of run.subagents ?? []) {
             if (_signal?.aborted) break;
-            await collect(sub, 0);
+            await collect(sub, 0, resolveCardId(sub, subIndex++));
           }
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e));
@@ -925,12 +1221,24 @@ async function buildSessionRuntime(
       };
 
       // textProducer streams tokens live. toolProducer must finish before
-      // subagentProducer so its placeholder envelope (children: []) is pushed
-      // first — the subagent's full envelope then overwrites the same id.
+      // subagentProducer so the parent invoke_sub_agent card is pushed first —
+      // the flat child tool calls then arrive and the GUI groups them under it.
       // run.subagents is log-backed (StreamChannel), so iterating it after the
       // tool stream still yields every handle.
       await Promise.all([textProducer, toolProducer]);
       await runSubagentProducer();
+      // Emit a fallback result for any invoke_sub_agent card that no subagent
+      // handle completed (e.g. the delegation failed before a run was created).
+      for (const pr of pendingSubagentResults) {
+        if (!pr.emitted) {
+          queue.push({
+            kind: "toolResult",
+            toolCallId: pr.cardId,
+            content: pr.fallback,
+          });
+          pr.emitted = true;
+        }
+      }
       const interrupted =
         Boolean(run.interrupted) || (run.interrupts?.length ?? 0) > 0;
       if (!interrupted) {
@@ -980,11 +1288,16 @@ async function buildSessionRuntime(
               }
             }
           }
-          const decisions = await requestHitlDecision(
-            payload,
-            _signal,
-            sessionId,
-          );
+          // Show the tool card(s) BEFORE the approval panel. Kiro keeps the
+          // yellow pending card visible while asking for permission.
+          emitHitlToolCards(payload, `${sessionId ?? "hitl"}-${Date.now()}`);
+          beginHitlHeartbeat("approval");
+          let decisions: Awaited<ReturnType<typeof requestHitlDecision>>;
+          try {
+            decisions = await requestHitlDecision(payload, _signal, sessionId);
+          } finally {
+            endHitlHeartbeat("approval");
+          }
           // Fold the user's decision into this session's permission memory so
           // the interrupt does not re-fire for the same path this chat:
           //  - approve a READ tool → read-only grant for the subtree (writes
@@ -992,20 +1305,32 @@ async function buildSessionRuntime(
           //  - approve a WRITE-style tool → all-tools grant (the user saw and
           //    approved that exact operation)
           //  - reject → the path is denied (backend hard-blocks, no card)
+          let policyPersisted = false;
           decisions.forEach((d, i) => {
             const req = payload?.actionRequests?.[i];
             const p = req?.args?.file_path ?? req?.args?.path;
             if (typeof p !== "string") return;
+            // Kiro's confirm stage sends the chosen path pattern (`**`, parent
+            // dir, or exact path) separately from the triggering file path.
+            const trustedDir =
+              typeof d?.trustedDir === "string" && d.trustedDir
+                ? d.trustedDir
+                : p;
+            const scope = d?.scope ?? "session";
             if (d?.type === "approve") {
-              if (isReadTool(String(req?.name ?? ""))) {
-                approveReadPath(approvedReadPaths, p);
+              if (scope === "workspace" || scope === "user") {
+                addTrustedDir(scope, trustedDir);
+                policyPersisted = true;
+              } else if (isReadTool(String(req?.name ?? ""))) {
+                approveReadPath(approvedReadPaths, trustedDir);
               } else {
-                approvePath(approvedPaths, p);
+                approvePath(approvedPaths, trustedDir);
               }
             } else {
               deniedPaths.add(normalizePath(p));
             }
           });
+          if (policyPersisted) recomputePolicy();
           // Resume the SAME thread with the user's decision.
           currentRun = await agent.streamEvents(
             new Command({ resume: { decisions } }),
@@ -1013,6 +1338,10 @@ async function buildSessionRuntime(
           );
         }
       } finally {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
         // Always close so the outer drain loop terminates, even on error.
         queue.close();
       }
@@ -1020,7 +1349,13 @@ async function buildSessionRuntime(
 
     try {
       for await (const piece of queue.drain()) {
-        if (piece.kind === "thinking") {
+        if (piece.kind === "heartbeat") {
+          yield {
+            role: "assistant",
+            content: "",
+            metadata: { deepAgentHeartbeat: true },
+          } as ChatMessage;
+        } else if (piece.kind === "thinking") {
           yield { role: "thinking", content: piece.text } as ChatMessage;
         } else if (piece.kind === "toolCall") {
           // Native structured tool call — the GUI renders it via toolCallState

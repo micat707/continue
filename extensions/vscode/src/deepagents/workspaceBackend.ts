@@ -1137,6 +1137,9 @@ let activeTurnAbort: AbortSignal | undefined;
 export function setActiveTurnAbort(signal: AbortSignal | undefined): void {
   activeTurnAbort = signal;
 }
+export function getActiveTurnAbort(): AbortSignal | undefined {
+  return activeTurnAbort;
+}
 
 function waitForShellIntegration(
   term: vscode.Terminal,
@@ -3212,7 +3215,9 @@ export function isPathApproved(
 ): boolean {
   const n = normalizeForApproval(path);
   if (!n) return false;
-  return [...approvedPaths].some((a) => n === a || n.startsWith(a + "/"));
+  return [...approvedPaths].some(
+    (a) => a === "**" || n === a || n.startsWith(a + "/"),
+  );
 }
 
 /**

@@ -5,6 +5,7 @@ import { useContext, useState } from "react";
 import StyledMarkdownPreview from "../../../components/StyledMarkdownPreview";
 import { IdeMessengerContext } from "../../../context/IdeMessenger";
 import { ChevronDownIcon, EditIcon, FileIcon } from "./OutcomeIcons";
+import { getKiroToolStatusClass, isKiroToolInProgress } from "./utils";
 
 interface CreateFileToolCallProps {
   relativeFilepath: string;
@@ -32,10 +33,8 @@ export function CreateFile(props: CreateFileToolCallProps) {
   const displayName =
     getUriPathBasename(props.relativeFilepath) || props.relativeFilepath;
   const isReverted = props.toolCallState?.status === "canceled";
-  const isAccepted =
-    props.toolCallState?.status === "done" ||
-    props.toolCallState?.status === "errored" ||
-    isReverted;
+  const statusClass = getKiroToolStatusClass(props.toolCallState?.status);
+  const inProgress = isKiroToolInProgress(props.toolCallState?.status);
   const src = `\`\`\`${getMarkdownLanguageTagForFile(props.relativeFilepath)} ${props.relativeFilepath}\n${props.fileContents ?? ""}\n\`\`\``;
 
   const fileLabel = (
@@ -56,12 +55,12 @@ export function CreateFile(props: CreateFileToolCallProps) {
   return (
     <div className="agent-outcome">
       <div className="agent-outcome-summary">
-        <span
-          className={`agent-outcome-status ${
-            isAccepted ? "agent-icon-accepted" : "agent-icon-pending"
-          }`}
-        >
-          <EditIcon />
+        <span className={`agent-outcome-status ${statusClass}`}>
+          {inProgress ? (
+            <i className="kiro-icon codicon codicon-loading" />
+          ) : (
+            <EditIcon />
+          )}
         </span>
         {isReverted && (
           <span className="agent-outcome-reverted">(reverted)</span>

@@ -22,6 +22,7 @@ import { EditToolbar } from "./EditToolbar";
 import { PendingApplyStatesToolbar } from "./PendingApplyStatesToolbar";
 import { PendingToolCallToolbar } from "./PendingToolCallToolbar";
 import { useDeepAgentHitl } from "./DeepAgentHitlToolbar";
+import { PermissionScopeDialog } from "./PermissionScopeDialog";
 import { ReviewChangesCard } from "./ReviewChangesCard";
 import { StreamingToolbar } from "./StreamingToolbar";
 import { TtsActiveToolbar } from "./TtsActiveToolbar";
@@ -69,6 +70,7 @@ export function LumpToolbar() {
     items: hitlItems,
     bulkApprove: hitlBulkApprove,
     bulkReject: hitlBulkReject,
+    scopeRequest: hitlScopeRequest,
   } = useDeepAgentHitl();
   // Edit tools are force-auto-approved (evaluateToolPolicies: isEditTool →
   // allowedWithoutPermission) and then go through the apply/diff flow, which
@@ -247,6 +249,12 @@ export function LumpToolbar() {
   // the top of this ladder.)
   if (pendingApprovalToolCalls.length > 0) {
     return <PendingToolCallToolbar />;
+  }
+
+  // Kiro's permission `confirm` stage replaces the approval card with the
+  // path-pattern / apply-to selector before the decision is sent.
+  if (hitlScopeRequest) {
+    return <PermissionScopeDialog {...hitlScopeRequest} />;
   }
 
   // DeepAgent HITL approval takes precedence over the "collapse while streaming"

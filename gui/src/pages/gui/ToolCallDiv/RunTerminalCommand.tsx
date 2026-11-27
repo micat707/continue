@@ -44,9 +44,9 @@ export function RunTerminalCommand(props: RunTerminalCommandToolCallProps) {
 
   const statusClass =
     statusType === "running"
-      ? "agent-icon-running"
+      ? "agent-icon-inProgress"
       : statusType === "failed"
-        ? "agent-icon-rejected"
+        ? "agent-icon-error"
         : statusType === "background"
           ? "agent-icon-pending"
           : "agent-icon-accepted";

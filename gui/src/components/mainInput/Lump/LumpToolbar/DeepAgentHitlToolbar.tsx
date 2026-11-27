@@ -3,16 +3,40 @@ import { useContext, useRef, useState } from "react";
 import { IdeMessengerContext } from "../../../../context/IdeMessenger";
 import { useWebviewListener } from "../../../../hooks/useWebviewListener";
 import { useAppSelector } from "../../../../redux/hooks";
+import {
+  clearHitlPending,
+  markHitlPending,
+} from "../../../../util/hitlPendingStore";
 import type { ReviewChangeItem } from "./ReviewChangesCard";
+import type {
+  PathPattern,
+  PermissionChoice,
+  PermissionScope,
+  PermissionScopeRequest,
+} from "./PermissionScopeDialog";
 
 export interface HitlDecision {
   id: string;
   type: "approve" | "reject";
+  /** Kiro-style "Apply to" selection for path approvals. */
+  scope?: PermissionScope;
+  /** Kiro-style path pattern: exact path / parent directory / all. */
+  pathPattern?: PathPattern;
+  /** Directory (or `**`) that the backend should remember as trusted. */
+  trustedDir?: string;
 }
 
 interface PendingAction {
   name?: string;
   args?: Record<string, unknown>;
+}
+
+interface PendingConfirmation {
+  requestId: string;
+  actions: PendingAction[];
+  idx: number;
+  toolName: string;
+  path: string;
 }
 
 /**
@@ -82,6 +106,11 @@ export function useDeepAgentHitl() {
   // Keyed by requestId, so two sessions paused on approvals do not clobber each
   // other, and a decision is always routed back to its own request.
   const [pending, setPending] = useState<Record<string, PendingApproval>>({});
+  // After a path-bearing Accept, Kiro enters a `confirm` stage: choose the
+  // trusted path pattern and the scope before actually sending the decision.
+  const [confirming, setConfirming] = useState<PendingConfirmation | null>(
+    null,
+  );
 
   useWebviewListener("deepAgentInterrupt", async (payload: any) => {
     const req = payload?.request;
@@ -98,6 +127,9 @@ export function useDeepAgentHitl() {
     // can arrive after the user has already switched tabs.
     const ownerSessionId: string | undefined =
       payload?.sessionId ?? currentSessionIdRef.current;
+    // Tell the stream watchdog that this session is waiting on a human, not
+    // on model output; otherwise it aborts after 3 minutes of silence.
+    markHitlPending(ownerSessionId);
 
     const items = actions.map((a, i): ReviewChangeItem => {
       // Command approval: the human must see the FULL command before
@@ -148,16 +180,29 @@ export function useDeepAgentHitl() {
         a.args?.targetFile ??
         (Array.isArray(a.args?.paths) ? a.args.paths[0] : undefined);
       const perm = describePermission(String(a.name ?? ""));
+      const label = perm?.verb ?? a.name ?? "tool";
       return {
         id: String(i),
-        label: perm?.verb ?? a.name ?? "tool",
+        label,
         filename: typeof p === "string" ? p : undefined,
         description: perm
           ? perm.scope === "read"
-            ? "批准后将允许本会话读取该路径及其子内容（其他读取工具同样免审批）；写入操作仍会单独询问"
-            : "批准后将允许本会话对该路径及其子内容执行此操作"
+            ? "批准后将选择授权目录及生效范围；读取授权不会自动放开写入"
+            : "批准后将选择授权目录及生效范围"
           : undefined,
-        onAccept: () => decide(requestId, actions, i, "approve"),
+        onAccept: () => {
+          if (perm && typeof p === "string") {
+            setConfirming({
+              requestId,
+              actions,
+              idx: i,
+              toolName: String(a.name ?? ""),
+              path: p,
+            });
+            return;
+          }
+          decide(requestId, actions, i, "approve");
+        },
         onReject: () => decide(requestId, actions, i, "reject"),
       };
     });
@@ -166,6 +211,31 @@ export function useDeepAgentHitl() {
       ...prev,
       [requestId]: { requestId, sessionId: ownerSessionId, items, actions },
     }));
+
+    // Single file-access action: skip the plain Approve/Reject card entirely
+    // and open the Kiro-style panel directly, defaulting to "This session".
+    // Multiple actions / commands still use the first card so the user sees
+    // everything being authorized.
+    if (actions.length === 1) {
+      const a = actions[0];
+      const p =
+        a.args?.file_path ??
+        a.args?.path ??
+        a.args?.targetFile ??
+        (Array.isArray(a.args?.paths) ? a.args.paths[0] : undefined);
+      const perm = describePermission(String(a.name ?? ""));
+      if (perm && typeof p === "string") {
+        setConfirming({
+          requestId,
+          actions,
+          idx: 0,
+          toolName: String(a.name ?? ""),
+          path: p,
+        });
+        return;
+      }
+    }
+    setConfirming(null);
   });
 
   const send = (requestId: string, decisions: HitlDecision[]) => {
@@ -173,6 +243,7 @@ export function useDeepAgentHitl() {
     // pending request (defensive — requestId is already unique, but the id
     // makes the routing explicit and audit-able).
     const owner = pending[requestId]?.sessionId;
+    clearHitlPending(owner);
     void ideMessenger.post("deepAgentInterruptResponse", {
       requestId,
       sessionId: owner,
@@ -202,6 +273,26 @@ export function useDeepAgentHitl() {
     );
   };
 
+  const confirmPermission = (choice: PermissionChoice) => {
+    if (!confirming) return;
+    const { requestId, actions, idx } = confirming;
+    send(
+      requestId,
+      actions.map((_, i) =>
+        i === idx
+          ? {
+              id: String(i),
+              type: "approve" as const,
+              scope: choice.scope,
+              pathPattern: choice.pattern,
+              trustedDir: choice.trustedDir,
+            }
+          : { id: String(i), type: "reject" as const },
+      ),
+    );
+    setConfirming(null);
+  };
+
   const bulk = (
     requestId: string,
     actions: PendingAction[],
@@ -221,6 +312,16 @@ export function useDeepAgentHitl() {
   );
   const activeApproval = mine[mine.length - 1];
 
+  const scopeRequest: PermissionScopeRequest | undefined =
+    confirming && pending[confirming.requestId]?.sessionId === currentSessionId
+      ? {
+          toolName: confirming.toolName,
+          path: confirming.path,
+          onConfirm: confirmPermission,
+          onCancel: () => setConfirming(null),
+        }
+      : undefined;
+
   return {
     active: Boolean(activeApproval),
     items: activeApproval?.items ?? [],
@@ -230,5 +331,6 @@ export function useDeepAgentHitl() {
     bulkReject: () =>
       activeApproval &&
       bulk(activeApproval.requestId, activeApproval.actions, "reject"),
+    scopeRequest,
   };
 }

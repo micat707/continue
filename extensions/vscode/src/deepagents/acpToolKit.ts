@@ -16,7 +16,10 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { AcpToolRegistry, type AcpSurface } from "./acpToolBridge";
 import { WEB_FETCH_DEFINITION, webFetchExecutor } from "./webFetchTool";
-import { createBackgroundProcessTools } from "./workspaceBackend";
+import {
+  createBackgroundProcessTools,
+  getActiveTurnAbort,
+} from "./workspaceBackend";
 import { createWebSearchTools } from "./webSearchTool";
 import { createSpecTools } from "./specTools";
 import {
@@ -66,7 +69,11 @@ export function createDeepAgentTools(
     description: USER_INPUT_DESCRIPTION,
     schema: userInputSchema,
     func: async (input: z.infer<typeof userInputSchema>) => {
-      const answer = await requestUserInput(input, options.sessionId);
+      const answer = await requestUserInput(
+        input,
+        options.sessionId,
+        getActiveTurnAbort(),
+      );
       return formatUserInputResult(input, answer);
     },
   });

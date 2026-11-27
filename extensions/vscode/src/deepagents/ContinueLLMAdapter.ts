@@ -80,6 +80,33 @@ const TOOL_DISPLAY_TO_ID: Record<string, string> = {
   // web_search is already the Kiro tool id — no display-name alias needed.
 };
 
+/**
+ * Kiro asks the model to attach a one-sentence `explanation` to every tool
+ * call; the UI renders it as the second row of read/search/list cards. Our
+ * deepagents tool schemas don't declare it, so the model never emits it. Add it
+ * to the wire-level schema sent to the provider while keeping the runtime tool
+ * schema untouched (Zod strips unknown keys on invoke).
+ */
+function withExplanationParameter(
+  parameters: Record<string, unknown>,
+): Record<string, unknown> {
+  const properties = {
+    ...((parameters.properties as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (!properties.explanation) {
+    properties.explanation = {
+      type: "string",
+      description:
+        "One sentence explanation as to why this tool is being used, and how it contributes to the goal.",
+    };
+  }
+  const required = Array.isArray(parameters.required)
+    ? [...(parameters.required as string[])]
+    : [];
+  if (!required.includes("explanation")) required.push("explanation");
+  return { ...parameters, properties, required };
+}
+
 // The raw wire-level (provider-format) logger lives in core but the on-disk
 // writer (`logLlmIo`) is extension-only, so we bridge it once. The sink now
 // receives a `sessionId` argument threaded from BaseLLM.streamChat's
@@ -130,6 +157,32 @@ const MODEL_STREAM_STALL_MS = 60_000;
  *  SiliconFlow/Qwen3-27B; more than one risks burning tokens on a real outage. */
 const MAX_MODEL_RETRIES = 1;
 
+/**
+ * Tool-call arguments that are not valid JSON cannot be repaired locally: the
+ * provider either stopped the stream early or dropped argument fragments.
+ * Retrying the same request only makes the user wait longer, so these errors
+ * are surfaced immediately instead of entering the model retry loop.
+ */
+class InvalidToolCallArgumentsError extends Error {
+  readonly invalidToolCallArguments = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidToolCallArgumentsError";
+  }
+}
+
+function isInvalidToolCallArgumentsError(
+  e: unknown,
+): e is InvalidToolCallArgumentsError {
+  return (
+    e instanceof InvalidToolCallArgumentsError ||
+    Boolean(
+      (e as { invalidToolCallArguments?: boolean })?.invalidToolCallArguments,
+    )
+  );
+}
+
 export class ContinueLLMAdapter extends BaseChatModel {
   llm: ILLM;
 
@@ -150,7 +203,7 @@ export class ContinueLLMAdapter extends BaseChatModel {
    * stream errors users see in the Console tab.
    */
   private static readonly BUILD_STAMP =
-    "2026-11-24-v4-startoffsetfix+stacktrace";
+    "2026-11-27-v10-file-content-language-fence";
   private static logBuildMarker(
     path: string,
     isSpec: boolean,
@@ -266,10 +319,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
           function: {
             name: c.function.name,
             description: c.function.description,
-            parameters: c.function.parameters ?? {
-              type: "object",
-              properties: {},
-            },
+            parameters: withExplanationParameter(
+              c.function.parameters ?? { type: "object", properties: {} },
+            ),
           },
         });
         continue;
@@ -293,7 +345,9 @@ export class ContinueLLMAdapter extends BaseChatModel {
           // `append_lines` to the model (TOOL_DISPLAY_TO_ID maps calls back).
           name: c.name === "fs_append" ? "append_lines" : c.name,
           description: c.description,
-          parameters: parameters as Record<string, unknown>,
+          parameters: withExplanationParameter(
+            parameters as Record<string, unknown>,
+          ),
         },
       });
     }
@@ -475,6 +529,19 @@ export class ContinueLLMAdapter extends BaseChatModel {
     });
 
     cleaned = cleaned.replace(/<\/?tool_call>/g, "").trim();
+
+    // Qwen3-Coder sometimes degrades a parallel tool-call block into garbage
+    // where JSON field names leak out as XML tags:
+    //   <variable_line>2</variable_line></tool_call>
+    //   <variable_name>invoke_sub_agent2</variable_name></tool_call> ...
+    // These never match the two formats above, so they used to render as raw
+    // text in chat. Strip the fragments; the model's native tool call (sent
+    // alongside, or on retry) is the real signal. Also normalise a bare
+    // `<function=NAME>` that lost its closing tag so it can't leak either.
+    const malformedRe =
+      /<variable_name>[\s\S]*?<\/variable_name>|<variable_line>[\s\S]*?<\/variable_line>|<\/?tool_call>|<\/?function=([^>\n]+)>/g;
+    cleaned = cleaned.replace(malformedRe, "").trim();
+
     return { toolCalls, cleaned };
   }
 
@@ -548,9 +615,12 @@ export class ContinueLLMAdapter extends BaseChatModel {
     let finalContent = content;
     if (shouldParseText) {
       const parsed = this.parseTextToolCalls(content);
+      // Always take the cleaned text: even when no valid tool call was
+      // recovered, `cleaned` has the malformed <variable_name>/<variable_line>
+      // Qwen fragments stripped, so they can't render as raw chat garbage.
+      finalContent = parsed.cleaned;
       if (parsed.toolCalls.length > 0) {
         toolCalls = parsed.toolCalls;
-        finalContent = parsed.cleaned;
         ContinueLLMAdapter.logDebug(
           "parsed TEXT-format tool calls:",
           JSON.stringify(toolCalls, null, 2),
@@ -606,13 +676,41 @@ export class ContinueLLMAdapter extends BaseChatModel {
       content.includes(m),
     );
     const cutMidCall = markerStarted && !hasToolCalls;
-    if (!truncatedByLimit && !cutMidCall) return;
 
-    const budget = maxTokens != null ? String(maxTokens) : "未设置";
+    // Provider drop mid-reply (SiliconFlow/Qwen3-27B): the stream just ends —
+    // often mid-sentence and with no finishReason — right when the model says
+    // it is about to call a tool. Without this check the turn silently ends
+    // and looks like "the agent stopped for no reason". Treat it as a
+    // retriable truncation so the retry loop re-issues the request.
+    const promisesToolCall =
+      /现在(我)?将|let me (now )?(call|delegate|invoke)|我将(调用|委托)|接下来(我)?(将|调用)/i.test(
+        content,
+      ) && !hasToolCalls;
+    const cutWithoutFinish =
+      !finishReason &&
+      !hasToolCalls &&
+      content.length > 0 &&
+      !/[。.!?！？\n]\s*$/.test(content);
+
+    if (
+      !truncatedByLimit &&
+      !cutMidCall &&
+      !(promisesToolCall && cutWithoutFinish)
+    )
+      return;
+
+    if (truncatedByLimit) {
+      const budget = maxTokens != null ? String(maxTokens) : "未设置";
+      throw new Error(
+        `模型输出达到 maxTokens=${budget} 上限而截断，无法完成本轮工具调用或回复。` +
+          "请在 config.yaml 为该模型增大 completionOptions.maxTokens，或减小思考预算（thinking）。",
+      );
+    }
     throw new Error(
-      `超出最大输出 token（maxTokens=${budget}）。模型输出被截断${cutMidCall ? "（工具调用未完成）" : ""}，` +
-        `无法完成本轮工具调用或回复。请在 config.yaml 为该模型增大 completionOptions.maxTokens，` +
-        `或关闭/减小模型的思考预算（thinking）。`,
+      `模型输出在工具调用处中断${cutMidCall ? "（工具调用未完成）" : ""}${
+        promisesToolCall ? "（声称要调用工具但未实际调用）" : ""
+      }：provider 提前结束或丢失了 tool-call 分片。` +
+        "若为偶发断流，请重试本轮；若频繁出现，请检查 provider 的流式 tool_calls 支持或切换模型。",
     );
   }
 
@@ -634,27 +732,26 @@ export class ContinueLLMAdapter extends BaseChatModel {
       // Arguments arrived but the identifying (id+name) fragment never did:
       // the model tried to call a tool and the name was lost mid-stream.
       if (!name) {
-        throw new Error(
-          "模型发起了工具调用但函数名丢失（疑似 provider 流式截断或 tool_calls 分片解析异常）。" +
+        throw new InvalidToolCallArgumentsError(
+          "模型发起了工具调用，但函数名丢失。这是 provider 的 tool_calls 流式分片异常，不是本地参数问题。" +
             `收到的参数片段: ${(tc.function?.arguments ?? "").slice(0, 200)}` +
-            "。请重试；若复现，请检查该 provider 的 tool_calls 流式返回格式。",
+            "。请重试本轮；若频繁出现，请检查该 provider 的 tool_calls 流式支持或切换模型。",
         );
       }
       // Native tool_call arguments must be complete JSON. A provider can cut
       // the stream mid-arguments and still label it finish_reason "stop", so
       // `assertNotTruncated` (which only checks text markers) misses it. That
       // leaves a half-written JSON like `{"path":"...md"` being dispatched to
-      // the tool (e.g. fs_write with no `text`). Detect it here so it surfaces
-      // as a clear error the agent can retry instead of a silent bad write.
+      // the tool. Surface it immediately: local retry cannot recover missing
+      // chunks and only makes the user wait longer.
       if (args !== "" && args !== "{}") {
         try {
           JSON.parse(args);
         } catch {
-          throw new Error(
-            `工具 ${name} 的参数 JSON 不完整（疑似输出被截断：` +
-              `maxTokens 或流式中断）。` +
+          throw new InvalidToolCallArgumentsError(
+            `工具 ${name} 的参数 JSON 不完整：provider 在 tool-call 参数流中提前结束或丢失分片。` +
               `收到的参数片段: ${args.slice(0, 300)}` +
-              "。请在 config.yaml 增大 completionOptions.maxTokens 后重试。",
+              "。请重试本轮；若频繁出现，请检查 provider 流式 tool_calls 支持或切换模型。",
           );
         }
       }
@@ -952,6 +1049,21 @@ export class ContinueLLMAdapter extends BaseChatModel {
           });
           break;
         }
+        if (isInvalidToolCallArgumentsError(e)) {
+          this.logApiJson("ERROR-FROM-MODEL", {
+            reason: "invalid-tool-call-arguments",
+            attempt: attempt + 1,
+            error: e.message,
+            stack: e.stack,
+            partialContent: content,
+            partialReasoning: reasoning,
+            rawChunkCount,
+          });
+          console.error(
+            `[DeepAgent] invalid tool call arguments: ${e.message}`,
+          );
+          break;
+        }
         this.logApiJson("ERROR-FROM-MODEL", {
           reason: "generate-failed",
           attempt: attempt + 1,
@@ -1223,6 +1335,21 @@ export class ContinueLLMAdapter extends BaseChatModel {
             partialReasoning: reasoning,
             rawChunkCount,
           });
+          break;
+        }
+        if (isInvalidToolCallArgumentsError(e)) {
+          this.logApiJson("ERROR-FROM-MODEL", {
+            reason: "invalid-tool-call-arguments",
+            attempt: attempt + 1,
+            error: e.message,
+            stack: e.stack,
+            partialContent: content,
+            partialReasoning: reasoning,
+            rawChunkCount,
+          });
+          console.error(
+            `[DeepAgent] invalid tool call arguments: ${e.message}`,
+          );
           break;
         }
         // Same for a failed attempt (provider error / crash / stall): without

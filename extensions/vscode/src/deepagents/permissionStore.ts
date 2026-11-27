@@ -56,3 +56,25 @@ export function loadWorkspaceConfig(): PermissionConfig | null {
     ],
   };
 }
+
+/**
+ * Persist a trusted directory chosen in Kiro's permission confirm stage.
+ * `user` writes the global Continue setting; `workspace` writes the current
+ * workspace/folder setting. Session approvals stay in memory in DeepAgentLLM.
+ */
+export function addTrustedDir(scope: "workspace" | "user", dir: string): void {
+  if (!dir) return;
+  const config = vscode.workspace.getConfiguration("continue");
+  const inspected = config.inspect<PermissionConfig>(SETTING_KEY);
+  const current =
+    scope === "user" ? inspected?.globalValue : inspected?.workspaceValue;
+  const next = current ? clone(current) : clone(DEFAULT_PERMISSION_CONFIG);
+  if (!next.trustedDirs.includes(dir)) next.trustedDirs.push(dir);
+  void config.update(
+    SETTING_KEY,
+    next,
+    scope === "user"
+      ? vscode.ConfigurationTarget.Global
+      : vscode.ConfigurationTarget.Workspace,
+  );
+}

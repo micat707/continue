@@ -1,5 +1,6 @@
 import { ToolCallState } from "core";
 import { useState } from "react";
+import { getKiroToolStatusClass, isKiroToolInProgress } from "./utils";
 
 interface SpecWorkflowCardProps {
   toolCallState: ToolCallState;
@@ -17,7 +18,8 @@ interface SpecWorkflowCardProps {
 export function SpecWorkflowCard({ toolCallState }: SpecWorkflowCardProps) {
   const [expanded, setExpanded] = useState(false);
   const args = (toolCallState.parsedArgs ?? {}) as { reason?: string };
-  const isDone = toolCallState.status === "done";
+  const statusClass = getKiroToolStatusClass(toolCallState.status);
+  const inProgress = isKiroToolInProgress(toolCallState.status);
   const isStart =
     toolCallState.toolCall.function?.name === "start_spec_workflow";
   const title = isStart ? "Start Spec Workflow" : "Run Spec Tasks";
@@ -39,12 +41,12 @@ export function SpecWorkflowCard({ toolCallState }: SpecWorkflowCardProps) {
         onClick={() => setExpanded(!expanded)}
         title="Toggle workflow result"
       >
-        <span
-          className={`agent-outcome-status ${
-            isDone ? "agent-icon-accepted" : "agent-icon-pending"
-          }`}
-        >
-          <i className="kiro-icon codicon codicon-rocket" />
+        <span className={`agent-outcome-status ${statusClass}`}>
+          <i
+            className={`kiro-icon codicon ${
+              inProgress ? "codicon-loading" : "codicon-rocket"
+            }`}
+          />
         </span>
         <span className="tool-call-title">{title}</span>
         {reason && (

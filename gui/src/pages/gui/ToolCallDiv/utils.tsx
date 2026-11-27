@@ -67,6 +67,52 @@ export function getIconByName(name: string): Icon | null {
   return null;
 }
 
+/**
+ * Kiro's ToolCallStatus → agent-icon status mapping (same for every tool kind):
+ *   completed   -> accepted (green)
+ *   failed      -> error (red)
+ *   in_progress -> inProgress spinner (theme progress color)
+ *   pending     -> pending (yellow)
+ *   canceled    -> canceled (neutral; Kiro has no tool-card case for it)
+ *
+ * Our ToolStatus uses done/errored/calling/generated/generating/canceled, so
+ * map those to Kiro's four states before choosing CSS classes/icons.
+ */
+export type KiroToolIconStatus =
+  | "accepted"
+  | "error"
+  | "inProgress"
+  | "pending"
+  | "canceled";
+
+export function getKiroToolIconStatus(
+  status: ToolStatus | undefined,
+): KiroToolIconStatus {
+  switch (status) {
+    case "done":
+      return "accepted";
+    case "errored":
+      return "error";
+    case "calling":
+    case "generating":
+      return "inProgress";
+    case "generated":
+      return "pending";
+    case "canceled":
+      return "canceled";
+    default:
+      return "pending";
+  }
+}
+
+export function getKiroToolStatusClass(status: ToolStatus | undefined): string {
+  return `agent-icon-${getKiroToolIconStatus(status)}`;
+}
+
+export function isKiroToolInProgress(status: ToolStatus | undefined): boolean {
+  return getKiroToolIconStatus(status) === "inProgress";
+}
+
 export function getStatusIcon(state: ToolStatus) {
   switch (state) {
     case "generating":

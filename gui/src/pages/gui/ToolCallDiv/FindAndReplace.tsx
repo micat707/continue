@@ -14,7 +14,6 @@ import {
   selectToolCallById,
 } from "../../../redux/selectors/selectToolCalls";
 import { cn } from "../../../util/cn";
-import Spinner from "../../../components/gui/Spinner";
 import {
   CompareChangesIcon,
   DiscardIcon,
@@ -23,6 +22,7 @@ import {
   ChevronDownIcon,
   FileIcon,
 } from "./OutcomeIcons";
+import { getKiroToolStatusClass, isKiroToolInProgress } from "./utils";
 
 interface FindAndReplaceDisplayProps {
   fileUri?: string; // Added during args preprocessing
@@ -163,8 +163,8 @@ export function FindAndReplaceDisplay({
   // while pending). Once reverted, Kiro swaps it for a green circled check.
   const statusGlyph = useMemo(() => {
     const status = toolCallState?.status;
-    if (status === "generating" || status === "calling") {
-      return <Spinner />;
+    if (isKiroToolInProgress(status)) {
+      return <i className="kiro-icon codicon codicon-loading" />;
     }
     if (status === "canceled") {
       return <RevertedIcon />;
@@ -212,7 +212,7 @@ export function FindAndReplaceDisplay({
   // the diff. Layout/classes mirror kiro-ui-agent-chat's .agent-outcome.
   const renderContainer = (content: React.ReactNode) => {
     const isReverted = toolCallState?.status === "canceled";
-    const isAccepted = toolCallState?.status === "done" || isReverted;
+    const statusClass = getKiroToolStatusClass(toolCallState?.status);
 
     // Read/execute phase (Kiro-style): a single quiet status row — spinner +
     // tool title + file pill. The full card (action buttons + Details diff)
@@ -231,7 +231,7 @@ export function FindAndReplaceDisplay({
       return (
         <div className="agent-outcome agent-outcome--running">
           <div className="agent-outcome-summary">
-            <span className="agent-outcome-status agent-icon-pending">
+            <span className={`agent-outcome-status ${statusClass}`}>
               {statusGlyph}
             </span>
             <span className="tool-call-title">{runningTitle}</span>
@@ -244,9 +244,7 @@ export function FindAndReplaceDisplay({
       <div className="agent-outcome">
         <div className="agent-outcome-summary">
           <span
-            className={`agent-outcome-status ${
-              isAccepted ? "agent-icon-accepted" : "agent-icon-pending"
-            }`}
+            className={`agent-outcome-status ${statusClass}`}
             style={toolCallState?.output ? { cursor: "pointer" } : undefined}
             onClick={(e) => {
               if (toolCallState?.output) {
