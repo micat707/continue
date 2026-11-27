@@ -2387,9 +2387,14 @@ html body [data-streamdown="code-block-body"] ::-webkit-scrollbar-button {
          bg-background p-4 text-sm
    Using plain CSS avoids depending on Tailwind JIT generating new classes. */
 .kiro-code-block {
-  margin: 1rem 0;
+  /* Kiro measured: code block right border sits 19px from the panel edge.
+     Our message column (thread-message 10px + StepContainer p-1 4px) gives
+     14px, so add 5px here to land on 19px without shifting normal text. */
+  margin: 1rem 5px 1rem 0;
   display: flex;
-  width: 100%;
+  /* `width: 100%` + margin-right gets eaten by the parent's overflow-x:clip.
+     Keep width auto so the 5px right margin actually survives. */
+  width: auto;
   flex-direction: column;
   gap: 0; /* no gap between the two stacked rows */
   position: relative; /* anchor the absolute copy action */
